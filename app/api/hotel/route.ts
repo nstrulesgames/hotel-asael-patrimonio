@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 const schemaStatements = [
-  `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, email TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, email TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS floors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, position INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS rooms (id INTEGER PRIMARY KEY AUTOINCREMENT, floor_id INTEGER NOT NULL, number TEXT NOT NULL UNIQUE, type TEXT NOT NULL, capacity INTEGER NOT NULL, status TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '')`,
   `CREATE TABLE IF NOT EXISTS guests (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, ci TEXT, phone TEXT, is_minor INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
@@ -9,10 +9,16 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS stay_guests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, guest_id INTEGER NOT NULL, is_primary INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS room_events (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, category TEXT NOT NULL, filename TEXT NOT NULL, object_key TEXT NOT NULL, content_type TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, notes TEXT NOT NULL DEFAULT '')`,
+  `CREATE TABLE IF NOT EXISTS inspections (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, kind TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS inspection_items (id INTEGER PRIMARY KEY AUTOINCREMENT, inspection_id INTEGER NOT NULL, inventory_item_id INTEGER, name TEXT NOT NULL, quantity INTEGER NOT NULL, condition TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '')`,
   `CREATE INDEX IF NOT EXISTS idx_rooms_floor_id ON rooms(floor_id)`,
   `CREATE INDEX IF NOT EXISTS idx_stays_room_status ON stays(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_events_room_created ON room_events(room_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_documents_stay_id ON documents(stay_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_inventory_room_id ON inventory_items(room_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_inspections_stay_kind ON inspections(stay_id, kind)`,
+  `CREATE INDEX IF NOT EXISTS idx_inspection_items_inspection ON inspection_items(inspection_id)`,
 ];
 
 type DbResult<T> = { results: T[] };
@@ -20,6 +26,10 @@ type DbResult<T> = { results: T[] };
 async function ensureDatabase() {
   const db = env.DB;
   await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+  const userColumns = await db.prepare("PRAGMA table_info(users)").all<{ name: string }>();
+  if (!userColumns.results.some((column) => column.name === "active")) {
+    await db.prepare("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1").run();
+  }
   const floors = await db.prepare("SELECT COUNT(*) AS total FROM floors").first<{ total: number }>();
   if (!floors?.total) {
     await db.batch([
@@ -37,6 +47,14 @@ async function ensureDatabase() {
     }
     await db.batch(inserts);
   }
+  const inventoryCount = await db.prepare("SELECT COUNT(*) AS total FROM inventory_items").first<{ total: number }>();
+  if (!inventoryCount?.total) {
+    const roomRows = await db.prepare("SELECT id FROM rooms").all<{ id: number }>();
+    const baseItems = [["Cama", 1], ["Almohada", 2], ["Juego de sábanas", 1], ["Cubrecama", 1], ["Mesa", 1], ["Cómoda", 1], ["Silla", 1]] as const;
+    const inventoryStatements = roomRows.results.flatMap((room) => baseItems.map(([name, quantity]) => db.prepare("INSERT INTO inventory_items (room_id, name, quantity, notes) VALUES (?, ?, ?, '')").bind(room.id, name, quantity)));
+    if (inventoryStatements.length) await db.batch(inventoryStatements);
+  }
+  await db.prepare("PRAGMA optimize").run();
 }
 
 function currentUser(request: Request) {
@@ -57,27 +75,32 @@ function currentUser(request: Request) {
 
 async function ensureUser(request: Request) {
   const user = currentUser(request);
-  const existing = await env.DB.prepare("SELECT id, name, email, role FROM users WHERE external_id = ?").bind(user.externalId).first();
+  const existing = await env.DB.prepare("SELECT id, name, email, role, active FROM users WHERE external_id = ?").bind(user.externalId).first<{ id: number; name: string; email: string; role: string; active: number }>();
+  if (existing && !existing.active) throw new Error("DEACTIVATED");
   if (existing) return existing;
   const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM users").first<{ total: number }>();
   const role = count?.total ? "RECEPCION" : "PROPIETARIO";
-  await env.DB.prepare("INSERT INTO users (external_id, email, name, role, created_at) VALUES (?, ?, ?, ?, ?)").bind(user.externalId, user.email, user.name, role, new Date().toISOString()).run();
-  return env.DB.prepare("SELECT id, name, email, role FROM users WHERE external_id = ?").bind(user.externalId).first();
+  await env.DB.prepare("INSERT INTO users (external_id, email, name, role, active, created_at) VALUES (?, ?, ?, ?, 1, ?)").bind(user.externalId, user.email, user.name, role, new Date().toISOString()).run();
+  return env.DB.prepare("SELECT id, name, email, role, active FROM users WHERE external_id = ?").bind(user.externalId).first();
 }
 
 export async function GET(request: Request) {
   await ensureDatabase();
   let user;
-  try { user = await ensureUser(request); } catch (error) { if (error instanceof Error && error.message === "UNAUTHORIZED") return Response.json({ error: "Debes iniciar sesión." }, { status: 401 }); throw error; }
-  const [floors, rooms, events] = await Promise.all([
+  try { user = await ensureUser(request); } catch (error) { if (error instanceof Error && error.message === "UNAUTHORIZED") return Response.json({ error: "Debes iniciar sesión." }, { status: 401 }); if (error instanceof Error && error.message === "DEACTIVATED") return Response.json({ error: "Tu acceso fue desactivado." }, { status: 403 }); throw error; }
+  const [floors, rooms, events, inventory, inspections, inspectionItems, users] = await Promise.all([
     env.DB.prepare("SELECT id, name, position FROM floors ORDER BY position").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, g.full_name AS guest_name, g.ci AS guest_ci,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id) AS guest_count
       FROM rooms r LEFT JOIN stays s ON s.room_id = r.id AND s.status = 'ACTIVA'
       LEFT JOIN guests g ON g.id = s.primary_guest_id ORDER BY CAST(r.number AS INTEGER), r.number`).all(),
     env.DB.prepare("SELECT e.*, r.number AS room_number FROM room_events e JOIN rooms r ON r.id = e.room_id ORDER BY e.created_at DESC LIMIT 12").all(),
+    env.DB.prepare("SELECT id, room_id, name, quantity, notes FROM inventory_items ORDER BY name").all(),
+    env.DB.prepare("SELECT * FROM inspections ORDER BY created_at DESC").all(),
+    env.DB.prepare("SELECT * FROM inspection_items ORDER BY id").all(),
+    env.DB.prepare("SELECT id, name, email, role, active, created_at FROM users ORDER BY active DESC, name").all(),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -85,7 +108,7 @@ type ActionPayload = Record<string, unknown> & { action?: string };
 export async function POST(request: Request) {
   await ensureDatabase();
   let user;
-  try { user = await ensureUser(request) as { name?: string; role?: string } | null; } catch (error) { if (error instanceof Error && error.message === "UNAUTHORIZED") return Response.json({ error: "Debes iniciar sesión." }, { status: 401 }); throw error; }
+  try { user = await ensureUser(request) as { id?: number; name?: string; role?: string } | null; } catch (error) { if (error instanceof Error && error.message === "UNAUTHORIZED") return Response.json({ error: "Debes iniciar sesión." }, { status: 401 }); if (error instanceof Error && error.message === "DEACTIVATED") return Response.json({ error: "Tu acceso fue desactivado." }, { status: 403 }); throw error; }
   const body = await request.json() as ActionPayload;
   const now = new Date().toISOString();
   const roomId = Number(body.roomId);
@@ -123,6 +146,8 @@ export async function POST(request: Request) {
   if (body.action === "checkout") {
     const stay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number }>();
     if (!stay) return Response.json({ error: "No existe una estadía activa." }, { status: 404 });
+    const returnInspection = await env.DB.prepare("SELECT id FROM inspections WHERE stay_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(stay.id).first();
+    if (!returnInspection) return Response.json({ error: "Primero completa el acta de devolución." }, { status: 409 });
     await env.DB.batch([
       env.DB.prepare("UPDATE stays SET status = 'FINALIZADA', check_out = ? WHERE id = ?").bind(now, stay.id),
       env.DB.prepare("UPDATE rooms SET status = 'LIMPIEZA' WHERE id = ?").bind(roomId),
@@ -150,6 +175,45 @@ export async function POST(request: Request) {
     if (user?.role === "RECEPCION") return Response.json({ error: "Solo administración puede editar habitaciones." }, { status: 403 });
     if (!roomId) return Response.json({ error: "Habitación inválida." }, { status: 400 });
     await env.DB.prepare("UPDATE rooms SET number = ?, type = ?, capacity = ?, notes = ? WHERE id = ?").bind(body.number, body.type || "Estándar", Number(body.capacity) || 1, body.notes || "", roomId).run();
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === "inventory") {
+    if (user?.role === "RECEPCION") return Response.json({ error: "Solo administración puede cambiar el inventario." }, { status: 403 });
+    if (!roomId || !String(body.name || "").trim()) return Response.json({ error: "Indica el elemento." }, { status: 400 });
+    if (body.itemId) {
+      await env.DB.prepare("UPDATE inventory_items SET name = ?, quantity = ?, notes = ? WHERE id = ? AND room_id = ?").bind(String(body.name).trim(), Number(body.quantity) || 1, body.notes || "", Number(body.itemId), roomId).run();
+    } else {
+      await env.DB.prepare("INSERT INTO inventory_items (room_id, name, quantity, notes) VALUES (?, ?, ?, ?)").bind(roomId, String(body.name).trim(), Number(body.quantity) || 1, body.notes || "").run();
+    }
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === "inventory_delete") {
+    if (user?.role === "RECEPCION") return Response.json({ error: "Solo administración puede cambiar el inventario." }, { status: 403 });
+    await env.DB.prepare("DELETE FROM inventory_items WHERE id = ? AND room_id = ?").bind(Number(body.itemId), roomId).run();
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === "inspection") {
+    const stayId = Number(body.stayId);
+    const kind = body.kind === "DEVOLUCION" ? "DEVOLUCION" : "ENTREGA";
+    if (!roomId || !stayId) return Response.json({ error: "No hay una estadía activa." }, { status: 400 });
+    const inspectionResult = await env.DB.prepare("INSERT INTO inspections (stay_id, room_id, kind, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(stayId, roomId, kind, body.notes || "", user?.name || "Usuario", now).run();
+    const inspectionId = Number(inspectionResult.meta.last_row_id);
+    const itemStatements = ((body.items || []) as Array<{ id?: number; name?: string; quantity?: number; condition?: string; notes?: string }>).filter((item) => item.name).map((item) => env.DB.prepare("INSERT INTO inspection_items (inspection_id, inventory_item_id, name, quantity, condition, notes) VALUES (?, ?, ?, ?, ?, ?)").bind(inspectionId, item.id || null, item.name, item.quantity || 1, item.condition || "BUENO", item.notes || ""));
+    if (itemStatements.length) await env.DB.batch(itemStatements);
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'INSPECCION', ?, ?, 'COMPLETADO', ?, ?)").bind(roomId, stayId, kind === "ENTREGA" ? "Acta de entrega completada" : "Acta de devolución completada", body.notes || "Sin observaciones generales", user?.name || "Usuario", now).run();
+    return Response.json({ ok: true, inspectionId });
+  }
+
+  if (body.action === "user") {
+    if (user?.role !== "PROPIETARIO" && user?.role !== "ADMINISTRADOR") return Response.json({ error: "No tienes permiso para administrar personal." }, { status: 403 });
+    const targetId = Number(body.userId);
+    if (!targetId) return Response.json({ error: "Trabajador inválido." }, { status: 400 });
+    if (targetId === user?.id && body.active === false) return Response.json({ error: "No puedes desactivar tu propio acceso." }, { status: 400 });
+    const role = ["PROPIETARIO", "ADMINISTRADOR", "RECEPCION"].includes(String(body.role)) ? body.role : "RECEPCION";
+    await env.DB.prepare("UPDATE users SET role = ?, active = ? WHERE id = ?").bind(role, body.active === false ? 0 : 1, targetId).run();
     return Response.json({ ok: true });
   }
 

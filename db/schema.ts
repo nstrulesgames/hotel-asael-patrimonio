@@ -6,6 +6,7 @@ export const users = sqliteTable("users", {
   email: text("email").notNull(),
   name: text("name").notNull(),
   role: text("role", { enum: ["PROPIETARIO", "ADMINISTRADOR", "RECEPCION"] }).notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
   createdAt: text("created_at").notNull(),
 });
 
@@ -75,3 +76,31 @@ export const documents = sqliteTable("documents", {
   contentType: text("content_type").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_documents_stay_id").on(table.stayId)]);
+
+export const inventoryItems = sqliteTable("inventory_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  roomId: integer("room_id").notNull(),
+  name: text("name").notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  notes: text("notes").notNull().default(""),
+}, (table) => [index("idx_inventory_room_id").on(table.roomId)]);
+
+export const inspections = sqliteTable("inspections", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  kind: text("kind", { enum: ["ENTREGA", "DEVOLUCION"] }).notNull(),
+  notes: text("notes").notNull().default(""),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_inspections_stay_kind").on(table.stayId, table.kind)]);
+
+export const inspectionItems = sqliteTable("inspection_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  inspectionId: integer("inspection_id").notNull(),
+  inventoryItemId: integer("inventory_item_id"),
+  name: text("name").notNull(),
+  quantity: integer("quantity").notNull(),
+  condition: text("condition", { enum: ["BUENO", "OBSERVADO", "FALTANTE"] }).notNull(),
+  notes: text("notes").notNull().default(""),
+}, (table) => [index("idx_inspection_items_inspection").on(table.inspectionId)]);
