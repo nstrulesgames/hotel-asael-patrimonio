@@ -63,6 +63,19 @@ export const stays = sqliteTable("stays", {
   capacityAuthorizedBy: text("capacity_authorized_by"),
 }, (table) => [index("idx_stays_room_status").on(table.roomId, table.status)]);
 
+export const stayRoomSegments = sqliteTable("stay_room_segments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  startedAt: text("started_at").notNull(),
+  endedAt: text("ended_at"),
+  startReason: text("start_reason").notNull(),
+  endReason: text("end_reason"),
+  createdBy: text("created_by").notNull(),
+  endedBy: text("ended_by"),
+}, (table) => [index("idx_stay_segments_stay_sequence").on(table.stayId, table.sequence)]);
+
 export const stayGuests = sqliteTable("stay_guests", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   stayId: integer("stay_id").notNull(),
@@ -86,6 +99,7 @@ export const documents = sqliteTable("documents", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),
   stayId: integer("stay_id"),
+  segmentId: integer("segment_id"),
   phase: text("phase", { enum: ["GENERAL", "ENTREGA", "DEVOLUCION"] }).notNull().default("GENERAL"),
   category: text("category").notNull(),
   filename: text("filename").notNull(),
@@ -93,7 +107,7 @@ export const documents = sqliteTable("documents", {
   contentType: text("content_type").notNull(),
   uploadedBy: text("uploaded_by").notNull().default("Hotel ASAEL"),
   createdAt: text("created_at").notNull(),
-}, (table) => [index("idx_documents_stay_id").on(table.stayId)]);
+}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId)]);
 
 export const inventoryItems = sqliteTable("inventory_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -107,11 +121,12 @@ export const inspections = sqliteTable("inspections", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   stayId: integer("stay_id").notNull(),
   roomId: integer("room_id").notNull(),
+  segmentId: integer("segment_id"),
   kind: text("kind", { enum: ["ENTREGA", "DEVOLUCION", "LIMPIEZA_FINAL"] }).notNull(),
   notes: text("notes").notNull().default(""),
   createdBy: text("created_by").notNull(),
   createdAt: text("created_at").notNull(),
-}, (table) => [index("idx_inspections_stay_kind").on(table.stayId, table.kind)]);
+}, (table) => [index("idx_inspections_stay_kind").on(table.stayId, table.kind), index("idx_inspections_segment_kind").on(table.segmentId, table.kind)]);
 
 export const inspectionItems = sqliteTable("inspection_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -127,6 +142,7 @@ export const roomTurnovers = sqliteTable("room_turnovers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   stayId: integer("stay_id").notNull(),
   roomId: integer("room_id").notNull(),
+  segmentId: integer("segment_id"),
   status: text("status", { enum: ["PENDIENTE", "EN_LIMPIEZA", "PENDIENTE_INSPECCION", "OBSERVADO", "COMPLETADO"] }).notNull(),
   cleaningStartedAt: text("cleaning_started_at"),
   cleaningStartedBy: text("cleaning_started_by"),

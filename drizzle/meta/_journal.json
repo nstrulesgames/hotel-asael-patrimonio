@@ -50,6 +50,13 @@
       "when": 1787351183965,
       "tag": "0006_dear_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787352435692,
+      "tag": "0007_marvelous_husk",
+      "breakpoints": true
     }
   ]
 }
