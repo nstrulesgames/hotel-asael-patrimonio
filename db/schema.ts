@@ -86,6 +86,7 @@ export const documents = sqliteTable("documents", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),
   stayId: integer("stay_id"),
+  phase: text("phase", { enum: ["GENERAL", "ENTREGA", "DEVOLUCION"] }).notNull().default("GENERAL"),
   category: text("category").notNull(),
   filename: text("filename").notNull(),
   objectKey: text("object_key").notNull(),
@@ -106,7 +107,7 @@ export const inspections = sqliteTable("inspections", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   stayId: integer("stay_id").notNull(),
   roomId: integer("room_id").notNull(),
-  kind: text("kind", { enum: ["ENTREGA", "DEVOLUCION"] }).notNull(),
+  kind: text("kind", { enum: ["ENTREGA", "DEVOLUCION", "LIMPIEZA_FINAL"] }).notNull(),
   notes: text("notes").notNull().default(""),
   createdBy: text("created_by").notNull(),
   createdAt: text("created_at").notNull(),
@@ -121,3 +122,18 @@ export const inspectionItems = sqliteTable("inspection_items", {
   condition: text("condition", { enum: ["BUENO", "OBSERVADO", "FALTANTE"] }).notNull(),
   notes: text("notes").notNull().default(""),
 }, (table) => [index("idx_inspection_items_inspection").on(table.inspectionId)]);
+
+export const roomTurnovers = sqliteTable("room_turnovers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  status: text("status", { enum: ["PENDIENTE", "EN_LIMPIEZA", "PENDIENTE_INSPECCION", "OBSERVADO", "COMPLETADO"] }).notNull(),
+  cleaningStartedAt: text("cleaning_started_at"),
+  cleaningStartedBy: text("cleaning_started_by"),
+  cleaningCompletedAt: text("cleaning_completed_at"),
+  cleaningCompletedBy: text("cleaning_completed_by"),
+  finalInspectionId: integer("final_inspection_id"),
+  approvedAt: text("approved_at"),
+  approvedBy: text("approved_by"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_turnovers_room_status").on(table.roomId, table.status)]);

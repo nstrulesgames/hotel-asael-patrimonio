@@ -39,6 +39,7 @@ export async function POST(request: Request) {
   if (!file.type.startsWith("image/") && file.type !== "application/pdf") return Response.json({ error: "Solo se permiten imágenes o PDF." }, { status: 415 });
   const roomId = Number(form.get("roomId"));
   const stayId = Number(form.get("stayId")) || null;
+  const phase = ["GENERAL", "ENTREGA", "DEVOLUCION"].includes(String(form.get("phase"))) ? String(form.get("phase")) : "GENERAL";
   const category = String(form.get("category") || "OTRA_EVIDENCIA");
   if (!roomId || !allowedCategories.has(category)) return Response.json({ error: "Habitación o categoría inválida." }, { status: 400 });
   if (stayId) {
@@ -48,6 +49,6 @@ export async function POST(request: Request) {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
   const key = `hotel-asael/${roomId}/${stayId || "sin-estadia"}/${crypto.randomUUID()}-${safeName}`;
   await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
-  const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, category, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, category, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
+  const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, phase, category, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, phase, category, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
   return Response.json({ ok: true, documentId: Number(result.meta.last_row_id) });
 }
