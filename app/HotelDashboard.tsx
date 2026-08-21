@@ -2,14 +2,15 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-type Floor = { id: number; name: string; position: number };
-type Room = { id: number; floor_id: number; number: string; type: string; capacity: number; status: string; notes: string; stay_id?: number; stay_type?: string; check_in?: string; expected_check_out?: string; guest_name?: string; guest_ci?: string; guest_count?: number };
+type Floor = { id: number; name: string; position: number; active: number };
+type Room = { id: number; floor_id: number; number: string; type: string; capacity: number; status: string; notes: string; active: number; stay_id?: number; stay_type?: string; check_in?: string; expected_check_out?: string; guest_name?: string; guest_ci?: string; guest_count?: number };
 type HotelEvent = { id: number; room_id: number; room_number: string; type: string; title: string; detail: string; status: string; created_by: string; created_at: string };
 type InventoryItem = { id: number; room_id: number; name: string; quantity: number; notes: string };
 type Inspection = { id: number; stay_id: number; room_id: number; kind: "ENTREGA" | "DEVOLUCION"; notes: string; created_by: string; created_at: string };
 type InspectionItem = { id: number; inspection_id: number; inventory_item_id?: number; name: string; quantity: number; condition: "BUENO" | "OBSERVADO" | "FALTANTE"; notes: string };
 type Worker = { id: number; name: string; email: string; role: string; active: number; created_at: string };
-type Data = { user: { id: number; name: string; email: string; role: string }; floors: Floor[]; rooms: Room[]; events: HotelEvent[]; inventory: InventoryItem[]; inspections: Inspection[]; inspectionItems: InspectionItem[]; users: Worker[] };
+type HotelDocument = { id: number; room_id: number; stay_id?: number; category: string; filename: string; content_type: string; uploaded_by: string; created_at: string };
+type Data = { user: { id: number; name: string; email: string; role: string }; floors: Floor[]; rooms: Room[]; events: HotelEvent[]; inventory: InventoryItem[]; inspections: Inspection[]; inspectionItems: InspectionItem[]; users: Worker[]; documents: HotelDocument[] };
 type Companion = { fullName: string; ci: string; phone: string; isMinor: boolean };
 
 const labels: Record<string, string> = {
@@ -19,6 +20,7 @@ const labels: Record<string, string> = {
 };
 
 const statusOrder = ["DISPONIBLE", "OCUPADA", "LIMPIEZA", "MANTENIMIENTO", "FUERA_SERVICIO"];
+const evidenceLabels: Record<string, string> = { VISTA_GENERAL: "Vista general", CAMA: "Cama y ropa de cama", MUEBLES: "Muebles", BANO: "Baño", TELEVISION: "Televisión", VENTILADOR: "Ventilador", DANOS: "Daños u observaciones", OTRA_EVIDENCIA: "Otra evidencia", CONTRATO: "Contrato", ACTA_ENTREGA_FIRMADA: "Acta de entrega firmada", ACTA_DEVOLUCION_FIRMADA: "Acta de devolución firmada" };
 
 export default function HotelDashboard() {
   const [data, setData] = useState<Data | null>(null);
@@ -57,11 +59,13 @@ export default function HotelDashboard() {
     } finally { setBusy(false); }
   };
 
-  const visibleRooms = useMemo(() => data?.rooms.filter((room) => activeFloor === "all" || room.floor_id === activeFloor) || [], [data, activeFloor]);
-  const counts = useMemo(() => Object.fromEntries(statusOrder.map((status) => [status, data?.rooms.filter((room) => room.status === status).length || 0])), [data]);
+  const operationalRooms = useMemo(() => data?.rooms.filter((room) => Boolean(room.active)) || [], [data]);
+  const visibleRooms = useMemo(() => operationalRooms.filter((room) => activeFloor === "all" || room.floor_id === activeFloor), [operationalRooms, activeFloor]);
+  const counts = useMemo(() => Object.fromEntries(statusOrder.map((status) => [status, operationalRooms.filter((room) => room.status === status).length])), [operationalRooms]);
 
   const openRoom = (room: Room) => { setSelected(room); setModal("room"); };
 
+  if (!data && notice) return <div className="access-blocked"><span className="brand-mark">A</span><h1>Acceso no disponible</h1><p>{notice}</p><a href="/signout-with-chatgpt?return_to=/">Usar otro correo</a></div>;
   if (!data) return <div className="loading"><span className="brand-mark">A</span><p>Preparando Hotel ASAEL…</p></div>;
 
   return (
@@ -87,12 +91,12 @@ export default function HotelDashboard() {
 
         {view === "habitaciones" && <>
           <section className="summary-grid">
-            <article className="summary hero-summary"><span className="summary-icon">⌂</span><div><small>Ocupación actual</small><strong>{counts.OCUPADA}<em> / {data.rooms.length}</em></strong><p>{Math.round((counts.OCUPADA / data.rooms.length) * 100)}% de las habitaciones</p></div></article>
+            <article className="summary hero-summary"><span className="summary-icon">⌂</span><div><small>Ocupación actual</small><strong>{counts.OCUPADA}<em> / {operationalRooms.length}</em></strong><p>{operationalRooms.length ? Math.round((counts.OCUPADA / operationalRooms.length) * 100) : 0}% de las habitaciones</p></div></article>
             {statusOrder.slice(0, 4).map((status) => <article className={`summary tone-${status.toLowerCase()}`} key={status}><small>{labels[status]}</small><strong>{counts[status]}</strong><i /></article>)}
           </section>
 
           <section className="panel room-panel">
-            <div className="panel-head"><div><h2>Habitaciones</h2><p>Selecciona una habitación para ver su estadía y realizar acciones.</p></div><div className="floor-tabs"><button className={activeFloor === "all" ? "active" : ""} onClick={() => setActiveFloor("all")}>Todas</button>{data.floors.map((floor) => <button key={floor.id} className={activeFloor === floor.id ? "active" : ""} onClick={() => setActiveFloor(floor.id)}>{floor.name}</button>)}</div></div>
+            <div className="panel-head"><div><h2>Habitaciones</h2><p>Selecciona una habitación para ver su estadía y realizar acciones.</p></div><div className="floor-tabs"><button className={activeFloor === "all" ? "active" : ""} onClick={() => setActiveFloor("all")}>Todas</button>{data.floors.filter((floor) => Boolean(floor.active)).map((floor) => <button key={floor.id} className={activeFloor === floor.id ? "active" : ""} onClick={() => setActiveFloor(floor.id)}>{floor.name}</button>)}</div></div>
             <div className="room-grid">{visibleRooms.map((room) => <button key={room.id} className={`room-card status-${room.status.toLowerCase()}`} onClick={() => openRoom(room)}>
               <div className="room-top"><span className="room-number">{room.number}</span><span className="status-pill"><i />{labels[room.status]}</span></div>
               <div className="room-main">{room.guest_name ? <><strong>{room.guest_name}</strong><p>{labels[room.stay_type || ""]} · {room.guest_count || 1} {(room.guest_count || 1) === 1 ? "huésped" : "huéspedes"}</p></> : <><strong>{room.type}</strong><p>Capacidad: {room.capacity} personas</p></>}</div>
@@ -105,12 +109,12 @@ export default function HotelDashboard() {
 
         {view === "actividad" && <section className="panel activity-page"><div className="panel-head"><div><h2>Bitácora de habitaciones</h2><p>Ingresos, salidas, limpieza, mantenimiento y cambios de habitación.</p></div></div><EventList events={data.events} /></section>}
 
-        {view === "configuracion" && <section className="settings-grid"><article className="panel settings-card"><span>🏨</span><h2>Estructura del hotel</h2><p>Actualmente hay {data.floors.length} pisos y {data.rooms.length} habitaciones. La numeración, características e inventario son editables desde cada habitación.</p><div className="floor-list">{data.floors.map((floor) => <div key={floor.id}><b>{floor.name}</b><span>{data.rooms.filter((room) => room.floor_id === floor.id).length} habitaciones</span></div>)}</div></article><article className="panel settings-card staff-card"><span>👥</span><h2>Personal y accesos</h2><p>{data.user.role === "RECEPCION" ? "Consulta quiénes tienen acceso al sistema." : "Desactiva al personal rotativo sin borrar su historial de actividad."}</p><div className="staff-list">{data.users.map((worker) => <div key={worker.id} className={!worker.active ? "inactive" : ""}><span className="staff-avatar">{worker.name.slice(0, 1)}</span><div><b>{worker.name}</b><small>{worker.email}</small></div><select value={worker.role} disabled={worker.id === data.user.id || data.user.role === "RECEPCION"} onChange={(e) => action({ action: "user", userId: worker.id, role: e.target.value, active: Boolean(worker.active) })}><option value="PROPIETARIO">Propietario</option><option value="ADMINISTRADOR">Administrador</option><option value="RECEPCION">Recepción</option></select><button disabled={worker.id === data.user.id || data.user.role === "RECEPCION"} onClick={() => action({ action: "user", userId: worker.id, role: worker.role, active: !worker.active })}>{worker.active ? "Desactivar" : "Reactivar"}</button></div>)}</div></article></section>}
+        {view === "configuracion" && <ConfigurationView data={data} busy={busy} onAction={action} />}
       </section>
 
       {modal && selected && <Modal onClose={() => setModal(null)} wide={modal === "room" || modal === "print"}>
-        {modal === "room" && <RoomDetail room={selected} data={data} onAction={(next) => setModal(next)} onInspection={(kind) => { setInspectionKind(kind); setModal("inspection"); }} onPrint={(kind) => { setInspectionKind(kind); setModal("print"); }} onCheckout={() => action({ action: "checkout", roomId: selected.id })} busy={busy} />}
-        {modal === "checkin" && <CheckIn room={selected} rooms={data.rooms} companions={companions} setCompanions={setCompanions} busy={busy} onSubmit={async (payload) => { const result = await action({ action: "checkin", roomId: selected.id, ...payload }); if (result) setCompanions([]); }} />}
+        {modal === "room" && <RoomDetail room={selected} data={data} onReload={load} onAction={(next) => setModal(next)} onInspection={(kind) => { setInspectionKind(kind); setModal("inspection"); }} onPrint={(kind) => { setInspectionKind(kind); setModal("print"); }} onCheckout={() => action({ action: "checkout", roomId: selected.id })} busy={busy} />}
+        {modal === "checkin" && <CheckIn room={selected} userRole={data.user.role} companions={companions} setCompanions={setCompanions} busy={busy} onSubmit={async (payload) => { const result = await action({ action: "checkin", roomId: selected.id, ...payload }); if (result) setCompanions([]); }} />}
         {modal === "event" && <EventForm room={selected} busy={busy} onSubmit={(payload) => action({ action: "event", roomId: selected.id, stayId: selected.stay_id, ...payload })} />}
         {modal === "transfer" && <Transfer room={selected} rooms={data.rooms} busy={busy} onSubmit={(destinationRoomId) => action({ action: "transfer", roomId: selected.id, destinationRoomId })} />}
         {modal === "edit" && <EditRoom room={selected} busy={busy} onSubmit={(payload) => action({ action: "room", roomId: selected.id, ...payload })} />}
@@ -122,6 +126,75 @@ export default function HotelDashboard() {
   );
 }
 
+function ConfigurationView({ data, busy, onAction }: { data: Data; busy: boolean; onAction: (payload: Record<string, unknown>) => Promise<unknown> }) {
+  const canEdit = data.user.role !== "RECEPCION";
+  const [inventoryMode, setInventoryMode] = useState("BASE");
+  const activeFloors = data.floors.filter((floor) => Boolean(floor.active));
+  const createFloor = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const result = await onAction({ action: "floor_create", name: values.get("name"), position: values.get("position") });
+    if (result) form.reset();
+  };
+  const createRoom = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const result = await onAction({ action: "room_create", number: values.get("number"), floorId: values.get("floorId"), type: values.get("type"), capacity: values.get("capacity"), notes: values.get("notes"), inventoryMode, sourceRoomId: values.get("sourceRoomId") });
+    if (result) { form.reset(); setInventoryMode("BASE"); }
+  };
+  return <section className="configuration-page">
+    <article className="panel structure-card">
+      <div className="panel-head"><div><h2>Estructura del hotel</h2><p>{activeFloors.length} pisos activos · {data.rooms.filter((room) => Boolean(room.active)).length} habitaciones activas. Los registros inactivos conservan su historial.</p></div></div>
+      {canEdit && <div className="structure-create-grid">
+        <form className="config-form" onSubmit={createFloor}><h3>Crear piso</h3><label>Nombre<input name="name" placeholder="Ej. Piso 4 o Terraza" required /></label><label>Orden<input name="position" type="number" min="1" placeholder="Automático" /></label><button className="primary" disabled={busy}>Añadir piso</button></form>
+        <form className="config-form room-create-form" onSubmit={createRoom}><h3>Crear habitación</h3><div className="compact-grid"><label>Número o nombre<input name="number" placeholder="Ej. 25 o Suite A" required /></label><label>Piso<select name="floorId" required><option value="">Seleccionar</option>{activeFloors.map((floor) => <option key={floor.id} value={floor.id}>{floor.name}</option>)}</select></label><label>Tipo<input name="type" defaultValue="Estándar" required /></label><label>Capacidad<input name="capacity" type="number" min="1" defaultValue="2" required /></label><label>Inventario<select value={inventoryMode} onChange={(event) => setInventoryMode(event.target.value)}><option value="BASE">Aplicar inventario base</option><option value="COPY">Copiar otra habitación</option><option value="EMPTY">Comenzar vacío</option></select></label>{inventoryMode === "COPY" && <label>Copiar desde<select name="sourceRoomId" required><option value="">Seleccionar</option>{data.rooms.filter((room) => Boolean(room.active)).map((room) => <option key={room.id} value={room.id}>Habitación {room.number}</option>)}</select></label>}<label className="span-2">Notas<input name="notes" placeholder="Características especiales" /></label></div><button className="primary" disabled={busy}>Añadir habitación</button></form>
+      </div>}
+      <div className="structure-section"><h3>Pisos</h3><div className="config-list">{data.floors.map((floor) => <FloorConfigRow key={floor.id} floor={floor} rooms={data.rooms.filter((room) => room.floor_id === floor.id)} canEdit={canEdit} busy={busy} onAction={onAction} />)}</div></div>
+      <div className="structure-section"><h3>Habitaciones</h3><div className="room-config-list">{data.rooms.map((room) => <RoomConfigRow key={room.id} room={room} floors={activeFloors} canEdit={canEdit} busy={busy} onAction={onAction} />)}</div></div>
+    </article>
+    <article className="panel settings-card staff-card"><span>👥</span><h2>Personal y accesos</h2><p>{canEdit ? "Registra previamente el correo de cada trabajador. Desactivarlo no borra su historial." : "Consulta quiénes tienen acceso al sistema."}</p>{canEdit && <WorkerInviteForm busy={busy} onAction={onAction} />}<div className="staff-list">{data.users.map((worker) => <div key={worker.id} className={!worker.active ? "inactive" : ""}><span className="staff-avatar">{worker.name.slice(0, 1)}</span><div><b>{worker.name}</b><small>{worker.email}</small></div><select value={worker.role} disabled={worker.id === data.user.id || !canEdit} onChange={(event) => { const reason = window.prompt(`Motivo para cambiar el rol de ${worker.name}:`); if (!reason) return; onAction({ action: "user", userId: worker.id, role: event.target.value, active: Boolean(worker.active), reason }); }}><option value="PROPIETARIO">Propietario</option><option value="ADMINISTRADOR">Administrador</option><option value="RECEPCION">Recepción</option></select><button disabled={worker.id === data.user.id || !canEdit} onClick={() => { const activating = !Boolean(worker.active); const reason = activating ? "Reactivación administrativa" : window.prompt(`Motivo para desactivar a ${worker.name}:`); if (!reason) return; onAction({ action: "user", userId: worker.id, role: worker.role, active: activating, reason }); }}>{worker.active ? "Desactivar" : "Reactivar"}</button></div>)}</div></article>
+  </section>;
+}
+
+function WorkerInviteForm({ busy, onAction }: { busy: boolean; onAction: (payload: Record<string, unknown>) => Promise<unknown> }) {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const result = await onAction({ action: "user_invite", name: values.get("name"), email: values.get("email"), role: values.get("role"), reason: values.get("reason") });
+    if (result) form.reset();
+  };
+  return <form className="worker-invite" onSubmit={submit}><h3>Autorizar trabajador</h3><label>Nombre<input name="name" placeholder="Nombre completo" required /></label><label>Correo<input name="email" type="email" placeholder="trabajador@correo.com" required /></label><label>Rol<select name="role"><option value="RECEPCION">Recepción</option><option value="ADMINISTRADOR">Administrador</option><option value="PROPIETARIO">Propietario</option></select></label><label>Motivo<input name="reason" defaultValue="Alta de trabajador" required /></label><button className="primary" disabled={busy}>Autorizar correo</button></form>;
+}
+
+function FloorConfigRow({ floor, rooms, canEdit, busy, onAction }: { floor: Floor; rooms: Room[]; canEdit: boolean; busy: boolean; onAction: (payload: Record<string, unknown>) => Promise<unknown> }) {
+  const [name, setName] = useState(floor.name);
+  const [position, setPosition] = useState(String(floor.position));
+  const toggle = () => {
+    const willActivate = !Boolean(floor.active);
+    const reason = willActivate ? "Reactivación administrativa" : window.prompt("Motivo de desactivación del piso:");
+    if (!reason) return;
+    onAction({ action: "floor_toggle", floorId: floor.id, active: willActivate, reason });
+  };
+  return <div className={!floor.active ? "inactive" : ""}><input value={name} disabled={!canEdit} onChange={(event) => setName(event.target.value)} aria-label="Nombre del piso" /><input className="position-input" value={position} disabled={!canEdit} type="number" min="1" onChange={(event) => setPosition(event.target.value)} aria-label="Orden del piso" /><span>{rooms.filter((room) => Boolean(room.active)).length} activas · {rooms.length} totales</span>{canEdit && <><button disabled={busy} onClick={() => onAction({ action: "floor_update", floorId: floor.id, name, position })}>Guardar</button><button className="muted-action" disabled={busy} onClick={toggle}>{floor.active ? "Desactivar" : "Reactivar"}</button></>}</div>;
+}
+
+function RoomConfigRow({ room, floors, canEdit, busy, onAction }: { room: Room; floors: Floor[]; canEdit: boolean; busy: boolean; onAction: (payload: Record<string, unknown>) => Promise<unknown> }) {
+  const [number, setNumber] = useState(room.number);
+  const [floorId, setFloorId] = useState(String(room.floor_id));
+  const [type, setType] = useState(room.type);
+  const [capacity, setCapacity] = useState(String(room.capacity));
+  const toggle = () => {
+    const willActivate = !Boolean(room.active);
+    const reason = willActivate ? "Reactivación administrativa" : window.prompt(`Motivo de desactivación de la habitación ${room.number}:`);
+    if (!reason) return;
+    onAction({ action: "room_toggle", roomId: room.id, active: willActivate, reason });
+  };
+  return <div className={!room.active ? "inactive" : ""}><input value={number} disabled={!canEdit} onChange={(event) => setNumber(event.target.value)} aria-label="Número de habitación" /><select value={floorId} disabled={!canEdit || room.status === "OCUPADA"} onChange={(event) => setFloorId(event.target.value)} aria-label="Piso asignado">{floors.map((floor) => <option key={floor.id} value={floor.id}>{floor.name}</option>)}</select><input value={type} disabled={!canEdit} onChange={(event) => setType(event.target.value)} aria-label="Tipo de habitación" /><input className="capacity-input" value={capacity} disabled={!canEdit} type="number" min="1" onChange={(event) => setCapacity(event.target.value)} aria-label="Capacidad" /><span className={`config-status status-${room.status.toLowerCase()}`}>{labels[room.status]}</span>{canEdit && <><button disabled={busy} onClick={() => onAction({ action: "room", roomId: room.id, floorId, number, type, capacity, notes: room.notes })}>Guardar</button><button className="muted-action" disabled={busy || room.status === "OCUPADA"} onClick={toggle}>{room.active ? "Desactivar" : "Reactivar"}</button></>}</div>;
+}
+
 function EventList({ events }: { events: HotelEvent[] }) {
   return <div className="event-list">{events.length ? events.map((event) => <article key={event.id}><span className={`event-icon event-${event.type.toLowerCase()}`}>{event.type === "INGRESO" ? "↘" : event.type === "SALIDA" ? "↗" : event.type === "LIMPIEZA" ? "✦" : event.type === "MANTENIMIENTO" ? "⌁" : "↔"}</span><div><strong>{event.title}</strong><p>Habitación {event.room_number} · {event.detail || "Sin observaciones"}</p></div><aside><b>{new Intl.DateTimeFormat("es-BO", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(event.created_at))}</b><small>{event.created_by}</small></aside></article>) : <p className="empty">Aún no existen movimientos registrados.</p>}</div>;
 }
@@ -130,18 +203,59 @@ function Modal({ children, onClose, wide = false }: { children: React.ReactNode;
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className={`modal ${wide ? "modal-wide" : ""}`}><button className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>{children}</section></div>;
 }
 
-function RoomDetail({ room, data, onAction, onInspection, onPrint, onCheckout, busy }: { room: Room; data: Data; onAction: (modal: "checkin" | "event" | "transfer" | "edit" | "inventory") => void; onInspection: (kind: "ENTREGA" | "DEVOLUCION") => void; onPrint: (kind: "ENTREGA" | "DEVOLUCION") => void; onCheckout: () => void; busy: boolean }) {
-  const [category, setCategory] = useState("CONTRATO"); const [file, setFile] = useState<File | null>(null); const [uploading, setUploading] = useState(false);
-  const upload = async () => { if (!file) return; setUploading(true); const form = new FormData(); form.set("file", file); form.set("roomId", String(room.id)); if (room.stay_id) form.set("stayId", String(room.stay_id)); form.set("category", category); await fetch("/api/documents", { method: "POST", body: form }); setUploading(false); setFile(null); };
+function RoomDetail({ room, data, onReload, onAction, onInspection, onPrint, onCheckout, busy }: { room: Room; data: Data; onReload: () => Promise<void>; onAction: (modal: "checkin" | "event" | "transfer" | "edit" | "inventory") => void; onInspection: (kind: "ENTREGA" | "DEVOLUCION") => void; onPrint: (kind: "ENTREGA" | "DEVOLUCION") => void; onCheckout: () => void; busy: boolean }) {
   return <><div className="detail-title"><div><p className="eyebrow">{data.floors.find((floor) => floor.id === room.floor_id)?.name}</p><h2>Habitación {room.number}</h2></div><span className={`big-status status-${room.status.toLowerCase()}`}>{labels[room.status]}</span></div>
     <div className="detail-grid"><div className="detail-main"><section className="info-box"><h3>{room.guest_name ? "Estadía activa" : "Información de habitación"}</h3>{room.guest_name ? <div className="guest-profile"><span>{room.guest_name.slice(0, 1)}</span><div><b>{room.guest_name}</b><p>CI {room.guest_ci || "no registrado"} · {room.guest_count || 1} personas</p><small>Ingreso: {new Intl.DateTimeFormat("es-BO", { dateStyle: "medium", timeStyle: "short" }).format(new Date(room.check_in!))}</small></div></div> : <div className="room-facts"><div><small>Tipo</small><b>{room.type}</b></div><div><small>Capacidad</small><b>{room.capacity} personas</b></div><div><small>Estado</small><b>{labels[room.status]}</b></div></div>}</section>
-      <section className="info-box"><h3>Documentos y evidencias</h3><p className="help">Sube contratos, actas firmadas o fotografías de la habitación.</p><div className="upload-row"><select value={category} onChange={(e) => setCategory(e.target.value)}><option value="CONTRATO">Contrato</option><option value="ACTA_ENTREGA_FIRMADA">Acta de entrega firmada</option><option value="ACTA_DEVOLUCION_FIRMADA">Acta de devolución firmada</option><option value="FOTO_INGRESO">Fotos de ingreso</option><option value="FOTO_SALIDA">Fotos de salida</option></select><label className="file-picker">{file ? file.name : "Elegir archivo"}<input type="file" accept="image/*,.pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} /></label><button disabled={!file || uploading} onClick={upload}>{uploading ? "Subiendo…" : "Guardar"}</button></div></section></div>
+      <EvidencePanel room={room} documents={data.documents} inventory={data.inventory.filter((item) => item.room_id === room.id)} onReload={onReload} /></div>
       <aside className="action-stack"><h3>Acciones</h3>{room.status === "DISPONIBLE" && <button className="primary" onClick={() => onAction("checkin")}>Registrar ingreso</button>}{room.status === "OCUPADA" && <><button onClick={() => onInspection("ENTREGA")}>Completar acta de entrega</button><button onClick={() => onPrint("ENTREGA")}>Imprimir última entrega</button><button onClick={() => onInspection("DEVOLUCION")}>Completar acta de devolución</button><button onClick={() => onPrint("DEVOLUCION")}>Imprimir última devolución</button><button onClick={() => onAction("transfer")}>Cambiar habitación</button><button className="danger-light" disabled={busy} onClick={onCheckout}>Registrar salida</button></>}<button onClick={() => onAction("event")}>Añadir evento</button>{data.user.role !== "RECEPCION" && <><button onClick={() => onAction("inventory")}>Editar inventario</button><button onClick={() => onAction("edit")}>Editar habitación</button></>}</aside></div></>;
 }
 
-function CheckIn({ room, companions, setCompanions, busy, onSubmit }: { room: Room; rooms: Room[]; companions: Companion[]; setCompanions: (value: Companion[]) => void; busy: boolean; onSubmit: (payload: Record<string, unknown>) => void }) {
-  const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); onSubmit({ primary: { fullName: form.get("fullName"), ci: form.get("ci"), phone: form.get("phone") }, stayType: form.get("stayType"), expectedCheckOut: form.get("expectedCheckOut") || null, notes: form.get("notes"), companions }); };
-  return <form onSubmit={submit}><div className="form-title"><p className="eyebrow">Nuevo ingreso</p><h2>Habitación {room.number}</h2><p>Registra al titular y a todas las personas que ocuparán la habitación.</p></div><div className="form-section"><h3>Huésped titular</h3><div className="form-grid"><label className="span-2">Nombre completo<input name="fullName" required autoFocus placeholder="Nombres y apellidos" /></label><label>CI o documento<input name="ci" placeholder="Ej. 7654321" /></label><label>Celular / WhatsApp<input name="phone" placeholder="Ej. 70000000" /></label><label>Tipo de estadía<select name="stayType"><option value="DIA">Por día</option><option value="SEMANA">Por semana</option><option value="MES">Por mes</option><option value="ARRENDAMIENTO">Arrendamiento</option></select></label><label>Salida prevista<input name="expectedCheckOut" type="date" /></label><label className="span-2">Observaciones<textarea name="notes" placeholder="Condiciones especiales, referencias u observaciones…" /></label></div></div><div className="form-section"><div className="section-line"><h3>Acompañantes ({companions.length})</h3><button type="button" className="text-button" onClick={() => setCompanions([...companions, { fullName: "", ci: "", phone: "", isMinor: false }])}>＋ Añadir persona</button></div>{companions.map((companion, index) => <div className="companion-row" key={index}><input aria-label="Nombre del acompañante" placeholder="Nombre completo" value={companion.fullName} onChange={(e) => setCompanions(companions.map((item, i) => i === index ? { ...item, fullName: e.target.value } : item))} /><input aria-label="CI del acompañante" placeholder="CI (opcional)" value={companion.ci} onChange={(e) => setCompanions(companions.map((item, i) => i === index ? { ...item, ci: e.target.value } : item))} /><label className="minor-check"><input type="checkbox" checked={companion.isMinor} onChange={(e) => setCompanions(companions.map((item, i) => i === index ? { ...item, isMinor: e.target.checked } : item))} /> Menor</label><button type="button" onClick={() => setCompanions(companions.filter((_, i) => i !== index))}>×</button></div>)}{!companions.length && <p className="empty-inline">No hay acompañantes registrados.</p>}</div><div className="form-actions"><span>Se creará el acta de entrega después del ingreso.</span><button className="primary" disabled={busy}>{busy ? "Guardando…" : "Confirmar ingreso"}</button></div></form>;
+function EvidencePanel({ room, documents, inventory, onReload }: { room: Room; documents: HotelDocument[]; inventory: InventoryItem[]; onReload: () => Promise<void> }) {
+  const [category, setCategory] = useState("VISTA_GENERAL");
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState("");
+  const names = inventory.map((item) => item.name.toLowerCase()).join(" ");
+  const required = ["VISTA_GENERAL", "BANO", ...( /(cama|almohada|sábana|sabana|cubrecama)/.test(names) ? ["CAMA"] : [] ), ...( /(mesa|cómoda|comoda|silla|poltrona|mueble)/.test(names) ? ["MUEBLES"] : [] ), ...( /televisi/.test(names) ? ["TELEVISION"] : [] ), ...( /ventilador/.test(names) ? ["VENTILADOR"] : [] )];
+  const roomDocuments = documents.filter((document) => document.room_id === room.id && (!room.stay_id || document.stay_id === room.stay_id || !document.stay_id));
+  const completed = required.filter((item) => roomDocuments.some((document) => document.category === item));
+  const options = [...required, "DANOS", "OTRA_EVIDENCIA", "CONTRATO", "ACTA_ENTREGA_FIRMADA", "ACTA_DEVOLUCION_FIRMADA"];
+  const upload = async () => {
+    if (!file) return;
+    setUploading(true); setMessage("");
+    const form = new FormData(); form.set("file", file); form.set("roomId", String(room.id)); if (room.stay_id) form.set("stayId", String(room.stay_id)); form.set("category", category);
+    try {
+      const response = await fetch("/api/documents", { method: "POST", body: form });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudo guardar el archivo.");
+      setFile(null); setMessage("Evidencia guardada correctamente."); await onReload();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "No se pudo guardar el archivo."); }
+    finally { setUploading(false); }
+  };
+  return <section className="info-box evidence-panel"><div className="evidence-heading"><div><h3>Documentos y evidencias</h3><p className="help">Carga cada vista solicitada. La lista se adapta al inventario de la habitación.</p></div><strong>{completed.length}/{required.length}</strong></div><div className="evidence-progress"><i style={{ width: `${required.length ? (completed.length / required.length) * 100 : 100}%` }} /></div><div className="evidence-checks">{required.map((item) => <span key={item} className={completed.includes(item) ? "done" : "pending"}>{completed.includes(item) ? "✓" : "○"} {evidenceLabels[item]}</span>)}</div><div className="upload-row"><select value={category} onChange={(event) => setCategory(event.target.value)}>{options.map((item) => <option key={item} value={item}>{evidenceLabels[item]}</option>)}</select><label className="file-picker">{file ? file.name : "Tomar foto o elegir archivo"}<input type="file" accept="image/*,.pdf" capture={category.startsWith("ACTA_") || category === "CONTRATO" ? undefined : "environment"} onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button disabled={!file || uploading} onClick={upload}>{uploading ? "Subiendo…" : "Guardar"}</button></div>{message && <p className="evidence-message">{message}</p>}<div className="document-gallery">{roomDocuments.length ? roomDocuments.map((document) => <a key={document.id} href={`/api/documents?id=${document.id}`} target="_blank" rel="noreferrer"><span>{document.content_type.startsWith("image/") ? "▧" : "▤"}</span><div><b>{evidenceLabels[document.category] || document.category}</b><small>{document.filename} · {new Intl.DateTimeFormat("es-BO", { dateStyle: "short" }).format(new Date(document.created_at))}</small></div></a>) : <p className="empty-inline">Todavía no hay archivos guardados.</p>}</div></section>;
+}
+
+function CheckIn({ room, userRole, companions, setCompanions, busy, onSubmit }: { room: Room; userRole: string; companions: Companion[]; setCompanions: (value: Companion[]) => void; busy: boolean; onSubmit: (payload: Record<string, unknown>) => void }) {
+  const [primary, setPrimary] = useState({ fullName: "", ci: "", phone: "" });
+  const [identificationPending, setIdentificationPending] = useState(false);
+  const [lookupMessage, setLookupMessage] = useState("");
+  const [capacityOverride, setCapacityOverride] = useState(false);
+  const occupantCount = 1 + companions.filter((item) => item.fullName.trim()).length;
+  const overCapacity = occupantCount > room.capacity;
+  const canAuthorize = userRole === "PROPIETARIO" || userRole === "ADMINISTRADOR";
+  const lookup = async () => {
+    if (!primary.ci.trim()) return;
+    setLookupMessage("Buscando huésped…");
+    try {
+      const response = await fetch("/api/hotel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "guest_lookup", ci: primary.ci }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      if (result.guest) { setPrimary({ fullName: result.guest.full_name, ci: result.guest.ci, phone: result.guest.phone || "" }); setIdentificationPending(false); setLookupMessage(result.guest.active_room_id ? "Este huésped ya tiene una estadía activa." : `Ficha encontrada · ${result.guest.stay_count} estadía(s) anterior(es).`); }
+      else setLookupMessage("CI nuevo: se creará una ficha de huésped.");
+    } catch (error) { setLookupMessage(error instanceof Error ? error.message : "No se pudo buscar el CI."); }
+  };
+  const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); onSubmit({ primary, identificationPending, stayType: form.get("stayType"), expectedCheckOut: form.get("expectedCheckOut") || null, notes: form.get("notes"), companions, capacityOverride: overCapacity && capacityOverride, capacityOverrideReason: form.get("capacityOverrideReason") }); };
+  return <form onSubmit={submit}><div className="form-title"><p className="eyebrow">Nuevo ingreso</p><h2>Habitación {room.number}</h2><p>Registra al titular y a todas las personas que ocuparán la habitación.</p></div><div className="form-section"><h3>Huésped titular</h3><div className="form-grid"><label className="span-2">Nombre completo<input required autoFocus placeholder="Nombres y apellidos" value={primary.fullName} onChange={(event) => setPrimary({ ...primary, fullName: event.target.value })} /></label><label>CI o documento<div className="lookup-field"><input placeholder="Ej. 7654321" value={primary.ci} disabled={identificationPending} onChange={(event) => setPrimary({ ...primary, ci: event.target.value })} onBlur={lookup} /><button type="button" disabled={!primary.ci || identificationPending} onClick={lookup}>Buscar</button></div></label><label>Celular / WhatsApp<input placeholder="Ej. 70000000" value={primary.phone} onChange={(event) => setPrimary({ ...primary, phone: event.target.value })} /></label><label className="pending-check"><input type="checkbox" checked={identificationPending} onChange={(event) => { setIdentificationPending(event.target.checked); if (event.target.checked) setPrimary({ ...primary, ci: "" }); }} /> Identificación pendiente</label>{lookupMessage && <p className="lookup-message">{lookupMessage}</p>}<label>Tipo de estadía<select name="stayType"><option value="DIA">Por día</option><option value="SEMANA">Por semana</option><option value="MES">Por mes</option><option value="ARRENDAMIENTO">Arrendamiento</option></select></label><label>Salida prevista<input name="expectedCheckOut" type="date" /></label><label className="span-2">Observaciones<textarea name="notes" placeholder="Condiciones especiales, referencias u observaciones…" /></label></div></div><div className="form-section"><div className="section-line"><h3>Acompañantes ({companions.length})</h3><button type="button" className="text-button" onClick={() => setCompanions([...companions, { fullName: "", ci: "", phone: "", isMinor: false }])}>＋ Añadir persona</button></div>{companions.map((companion, index) => <div className="companion-row" key={index}><input aria-label="Nombre del acompañante" placeholder="Nombre completo" value={companion.fullName} onChange={(e) => setCompanions(companions.map((item, i) => i === index ? { ...item, fullName: e.target.value } : item))} /><input aria-label="CI del acompañante" placeholder="CI (opcional)" value={companion.ci} onChange={(e) => setCompanions(companions.map((item, i) => i === index ? { ...item, ci: e.target.value } : item))} /><label className="minor-check"><input type="checkbox" checked={companion.isMinor} onChange={(e) => setCompanions(companions.map((item, i) => i === index ? { ...item, isMinor: e.target.checked } : item))} /> Menor</label><button type="button" onClick={() => setCompanions(companions.filter((_, i) => i !== index))}>×</button></div>)}{!companions.length && <p className="empty-inline">No hay acompañantes registrados.</p>}{overCapacity && <div className="capacity-warning"><b>Capacidad excedida: {occupantCount} personas para {room.capacity} plazas.</b>{canAuthorize ? <><label><input type="checkbox" checked={capacityOverride} onChange={(event) => setCapacityOverride(event.target.checked)} /> Autorizar excepcionalmente</label>{capacityOverride && <textarea name="capacityOverrideReason" required placeholder="Motivo de la autorización…" />}</> : <p>Debe realizar el ingreso un propietario o administrador.</p>}</div>}</div><div className="form-actions"><span>Se creará el acta de entrega después del ingreso.</span><button className="primary" disabled={busy || (overCapacity && (!canAuthorize || !capacityOverride))}>{busy ? "Guardando…" : "Confirmar ingreso"}</button></div></form>;
 }
 
 function EventForm({ room, busy, onSubmit }: { room: Room; busy: boolean; onSubmit: (payload: Record<string, unknown>) => void }) {

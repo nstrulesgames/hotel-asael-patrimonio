@@ -10,10 +10,20 @@ export const users = sqliteTable("users", {
   createdAt: text("created_at").notNull(),
 });
 
+export const userAccessEvents = sqliteTable("user_access_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  action: text("action").notNull(),
+  reason: text("reason").notNull(),
+  performedBy: text("performed_by").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_user_access_events_user").on(table.userId, table.createdAt)]);
+
 export const floors = sqliteTable("floors", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   position: integer("position").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
 });
 
 export const rooms = sqliteTable("rooms", {
@@ -24,6 +34,7 @@ export const rooms = sqliteTable("rooms", {
   capacity: integer("capacity").notNull(),
   status: text("status", { enum: ["DISPONIBLE", "OCUPADA", "LIMPIEZA", "MANTENIMIENTO", "FUERA_SERVICIO"] }).notNull(),
   notes: text("notes").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
 }, (table) => [index("idx_rooms_floor_id").on(table.floorId)]);
 
 export const guests = sqliteTable("guests", {
@@ -32,8 +43,10 @@ export const guests = sqliteTable("guests", {
   ci: text("ci"),
   phone: text("phone"),
   isMinor: integer("is_minor", { mode: "boolean" }).notNull(),
+  identificationPending: integer("identification_pending", { mode: "boolean" }).notNull().default(false),
+  updatedAt: text("updated_at"),
   createdAt: text("created_at").notNull(),
-});
+}, (table) => [index("idx_guests_ci").on(table.ci)]);
 
 export const stays = sqliteTable("stays", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -45,6 +58,9 @@ export const stays = sqliteTable("stays", {
   checkOut: text("check_out"),
   status: text("status", { enum: ["ACTIVA", "FINALIZADA"] }).notNull(),
   notes: text("notes").notNull(),
+  capacityOverride: integer("capacity_override", { mode: "boolean" }).notNull().default(false),
+  capacityOverrideReason: text("capacity_override_reason"),
+  capacityAuthorizedBy: text("capacity_authorized_by"),
 }, (table) => [index("idx_stays_room_status").on(table.roomId, table.status)]);
 
 export const stayGuests = sqliteTable("stay_guests", {
@@ -74,6 +90,7 @@ export const documents = sqliteTable("documents", {
   filename: text("filename").notNull(),
   objectKey: text("object_key").notNull(),
   contentType: text("content_type").notNull(),
+  uploadedBy: text("uploaded_by").notNull().default("Hotel ASAEL"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_documents_stay_id").on(table.stayId)]);
 
