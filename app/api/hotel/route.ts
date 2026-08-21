@@ -304,7 +304,6 @@ export async function POST(request: Request) {
   if (body.action === "event") {
     if (!roomId || !body.title) return Response.json({ error: "Completa el evento." }, { status: 400 });
     await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, body.stayId || null, body.type || "OTRO", body.title, body.detail || "", body.status || "PENDIENTE", user?.name || "Usuario", now).run();
-    if (body.roomStatus) await env.DB.prepare("UPDATE rooms SET status = ? WHERE id = ?").bind(body.roomStatus, roomId).run();
     return Response.json({ ok: true });
   }
 
