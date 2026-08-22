@@ -189,3 +189,24 @@ export const workOrderHistory = sqliteTable("work_order_history", {
   performedBy: text("performed_by").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_work_order_history_order_created").on(table.workOrderId, table.createdAt)]);
+
+export const changeRequests = sqliteTable("change_requests", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  roomId: integer("room_id").notNull(),
+  entityType: text("entity_type", { enum: ["GUEST", "STAY"] }).notNull(),
+  entityId: integer("entity_id").notNull(),
+  fieldName: text("field_name").notNull(),
+  oldValue: text("old_value"),
+  proposedValue: text("proposed_value"),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["PENDIENTE", "APROBADA", "RECHAZADA"] }).notNull(),
+  applicationMode: text("application_mode", { enum: ["DIRECTA", "APROBACION"] }).notNull(),
+  requestedByUserId: integer("requested_by_user_id").notNull(),
+  requestedByName: text("requested_by_name").notNull(),
+  requestedAt: text("requested_at").notNull(),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+  appliedAt: text("applied_at"),
+}, (table) => [index("idx_change_requests_status_requested").on(table.status, table.requestedAt), index("idx_change_requests_entity_field").on(table.entityType, table.entityId, table.fieldName)]);

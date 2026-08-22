@@ -34,3 +34,25 @@ test("persiste órdenes, historial y evidencias relacionadas", async () => {
   assert.match(migration, /CREATE TABLE `work_order_history`/);
   assert.match(documents, /work_order_id/);
 });
+
+test("aplica la ventana de corrección y conserva solicitudes pendientes", async () => {
+  const [route, dashboard, migration] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0009_round_doctor_faustus.sql"), "utf8"),
+  ]);
+  assert.match(route, /30 \* 60 \* 1000/);
+  assert.match(route, /correction_submit/);
+  assert.match(route, /correction_review/);
+  assert.match(route, /El dato original cambió después de la solicitud/);
+  assert.match(dashboard, /function ApprovalsView/);
+  assert.match(dashboard, /function CorrectionForm/);
+  assert.match(migration, /change_requests/);
+});
+
+test("muestra vencimientos sin finalizar estadías automáticamente", async () => {
+  const route = await readFile(projectFile("app/api/hotel/route.ts"), "utf8");
+  assert.match(route, /ESTADIA_VENCIDA/);
+  assert.match(route, /TAREA_VENCIDA/);
+  assert.match(route, /TAREA_POR_VENCER/);
+});

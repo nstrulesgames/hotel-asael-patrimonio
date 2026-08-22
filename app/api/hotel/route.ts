@@ -17,6 +17,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS room_turnovers (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER, status TEXT NOT NULL, cleaning_started_at TEXT, cleaning_started_by TEXT, cleaning_completed_at TEXT, cleaning_completed_by TEXT, final_inspection_id INTEGER, approved_at TEXT, approved_by TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS work_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL, status TEXT NOT NULL, assigned_user_id INTEGER, due_at TEXT, blocks_room INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, started_by TEXT, completed_at TEXT, completed_by TEXT, cancelled_at TEXT, cancelled_by TEXT, cancellation_reason TEXT)`,
   `CREATE TABLE IF NOT EXISTS work_order_history (id INTEGER PRIMARY KEY AUTOINCREMENT, work_order_id INTEGER NOT NULL, action TEXT NOT NULL, from_status TEXT, to_status TEXT, detail TEXT NOT NULL DEFAULT '', performed_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS change_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, field_name TEXT NOT NULL, old_value TEXT, proposed_value TEXT, reason TEXT NOT NULL, status TEXT NOT NULL, application_mode TEXT NOT NULL, requested_by_user_id INTEGER NOT NULL, requested_by_name TEXT NOT NULL, requested_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT, applied_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS idx_rooms_floor_id ON rooms(floor_id)`,
   `CREATE INDEX IF NOT EXISTS idx_stays_room_status ON stays(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_events_room_created ON room_events(room_id, created_at)`,
@@ -31,9 +32,9 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_work_orders_room_status ON work_orders(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_work_orders_status_priority ON work_orders(status, priority)`,
   `CREATE INDEX IF NOT EXISTS idx_work_order_history_order_created ON work_order_history(work_order_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_change_requests_status_requested ON change_requests(status, requested_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_change_requests_entity_field ON change_requests(entity_type, entity_id, field_name)`,
 ];
-
-type DbResult<T> = { results: T[] };
 
 async function ensureDatabase() {
   const db = env.DB;
@@ -153,9 +154,9 @@ export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory] = await Promise.all([
+  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
-    env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, g.full_name AS guest_name, g.ci AS guest_ci,
+    env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id) AS guest_count,
       t.id AS turnover_id, t.status AS turnover_status, t.cleaning_started_at, t.cleaning_started_by, t.cleaning_completed_at, t.cleaning_completed_by,
       COALESCE((SELECT seg.id FROM stay_room_segments seg WHERE seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL ORDER BY seg.sequence DESC LIMIT 1), t.segment_id) AS current_segment_id
@@ -169,13 +170,22 @@ export async function GET(request: Request) {
     env.DB.prepare("SELECT * FROM inspection_items ORDER BY id").all(),
     env.DB.prepare("SELECT id, name, email, role, active, created_at FROM users ORDER BY active DESC, name").all(),
     env.DB.prepare("SELECT id, room_id, stay_id, segment_id, work_order_id, phase, category, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
-    env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, seg.started_at AS created_at
+    env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, NULL AS work_order_id, seg.started_at AS created_at, CAST(julianday('now') - julianday(seg.started_at) AS INTEGER) AS days_overdue
       FROM stays s JOIN rooms r ON r.id = s.room_id JOIN stay_room_segments seg ON seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL
       WHERE s.status = 'ACTIVA' AND julianday('now') - julianday(seg.started_at) >= 1
       AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.segment_id = seg.id AND d.category = 'ACTA_ENTREGA_FIRMADA')
       UNION ALL
-      SELECT 'CIERRE_OPERATIVO' AS type, r.id, r.number, t.stay_id, t.created_at
-      FROM room_turnovers t JOIN rooms r ON r.id = t.room_id WHERE t.status != 'COMPLETADO'`).all(),
+      SELECT 'CIERRE_OPERATIVO', r.id, r.number, t.stay_id, NULL, t.created_at, 0
+      FROM room_turnovers t JOIN rooms r ON r.id = t.room_id WHERE t.status != 'COMPLETADO'
+      UNION ALL
+      SELECT 'ESTADIA_VENCIDA', r.id, r.number, s.id, NULL, s.expected_check_out, CAST(julianday('now') - julianday(s.expected_check_out) AS INTEGER)
+      FROM stays s JOIN rooms r ON r.id = s.room_id WHERE s.status = 'ACTIVA' AND s.expected_check_out IS NOT NULL AND datetime(s.expected_check_out, '+1 day') < datetime('now')
+      UNION ALL
+      SELECT CASE WHEN datetime(w.due_at) < datetime('now') THEN 'TAREA_VENCIDA' ELSE 'TAREA_POR_VENCER' END,
+        r.id, r.number, w.stay_id, w.id, w.due_at,
+        CASE WHEN datetime(w.due_at) < datetime('now') THEN CAST(julianday('now') - julianday(w.due_at) AS INTEGER) ELSE 0 END
+      FROM work_orders w JOIN rooms r ON r.id = w.room_id
+      WHERE w.status IN ('PENDIENTE', 'EN_PROCESO') AND w.due_at IS NOT NULL AND datetime(w.due_at) <= datetime('now', '+1 day')`).all(),
     env.DB.prepare(`SELECT seg.*, r.number AS room_number,
       (SELECT COUNT(*) FROM documents d WHERE d.segment_id = seg.id) AS document_count,
       (SELECT COUNT(*) FROM inspections i WHERE i.segment_id = seg.id AND i.kind = 'ENTREGA') AS delivery_count,
@@ -190,14 +200,44 @@ export async function GET(request: Request) {
       ORDER BY CASE w.status WHEN 'EN_PROCESO' THEN 0 WHEN 'PENDIENTE' THEN 1 WHEN 'COMPLETADO' THEN 2 ELSE 3 END,
       CASE w.priority WHEN 'URGENTE' THEN 0 WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 ELSE 3 END, w.created_at DESC`).all(),
     env.DB.prepare("SELECT * FROM work_order_history ORDER BY created_at DESC").all(),
+    env.DB.prepare(`SELECT c.*, r.number AS room_number FROM change_requests c JOIN rooms r ON r.id = c.room_id
+      WHERE ? != 'RECEPCION' OR c.requested_by_user_id = ? ORDER BY CASE c.status WHEN 'PENDIENTE' THEN 0 ELSE 1 END, c.requested_at DESC`).bind(user?.role || "RECEPCION", user?.id || 0).all(),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
 
 function normalizeCi(value: unknown) {
   return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+const correctionFields: Record<string, { entityType: "GUEST" | "STAY"; label: string }> = {
+  full_name: { entityType: "GUEST", label: "Nombre del huésped" },
+  ci: { entityType: "GUEST", label: "CI del huésped" },
+  phone: { entityType: "GUEST", label: "Celular / WhatsApp" },
+  expected_check_out: { entityType: "STAY", label: "Fecha prevista de salida" },
+  stay_type: { entityType: "STAY", label: "Modalidad de estadía" },
+  notes: { entityType: "STAY", label: "Observaciones de estadía" },
+};
+
+async function correctionValue(entityType: "GUEST" | "STAY", entityId: number, fieldName: string) {
+  if (entityType === "GUEST") {
+    const row = await env.DB.prepare("SELECT full_name, ci, phone FROM guests WHERE id = ?").bind(entityId).first<Record<string, string | null>>();
+    return row ? row[fieldName] ?? "" : null;
+  }
+  const row = await env.DB.prepare("SELECT expected_check_out, stay_type, notes FROM stays WHERE id = ?").bind(entityId).first<Record<string, string | null>>();
+  return row ? row[fieldName] ?? "" : null;
+}
+
+async function applyCorrection(entityType: "GUEST" | "STAY", entityId: number, fieldName: string, proposedValue: string, now: string) {
+  if (entityType === "GUEST" && fieldName === "full_name") return env.DB.prepare("UPDATE guests SET full_name = ?, updated_at = ? WHERE id = ?").bind(proposedValue, now, entityId).run();
+  if (entityType === "GUEST" && fieldName === "ci") return env.DB.prepare("UPDATE guests SET ci = ?, identification_pending = 0, updated_at = ? WHERE id = ?").bind(proposedValue, now, entityId).run();
+  if (entityType === "GUEST" && fieldName === "phone") return env.DB.prepare("UPDATE guests SET phone = ?, updated_at = ? WHERE id = ?").bind(proposedValue || null, now, entityId).run();
+  if (entityType === "STAY" && fieldName === "expected_check_out") return env.DB.prepare("UPDATE stays SET expected_check_out = ? WHERE id = ?").bind(proposedValue || null, entityId).run();
+  if (entityType === "STAY" && fieldName === "stay_type") return env.DB.prepare("UPDATE stays SET stay_type = ? WHERE id = ?").bind(proposedValue, entityId).run();
+  if (entityType === "STAY" && fieldName === "notes") return env.DB.prepare("UPDATE stays SET notes = ? WHERE id = ?").bind(proposedValue, entityId).run();
+  throw new Error("Campo de corrección inválido.");
 }
 
 export async function POST(request: Request) {
@@ -208,6 +248,68 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   const roomId = Number(body.roomId);
   const canConfigure = user?.role === "PROPIETARIO" || user?.role === "ADMINISTRADOR";
+
+  if (body.action === "correction_submit") {
+    const fieldName = String(body.fieldName || "");
+    const field = correctionFields[fieldName];
+    const reason = String(body.reason || "").trim();
+    let proposedValue = String(body.proposedValue ?? "").trim();
+    if (!roomId || !field || !reason) return Response.json({ error: "Selecciona el dato e indica el motivo de la corrección." }, { status: 400 });
+    const stay = await env.DB.prepare("SELECT id, primary_guest_id, check_in, stay_type, expected_check_out FROM stays WHERE room_id = ? AND status = 'ACTIVA' ORDER BY check_in DESC LIMIT 1").bind(roomId).first<{ id: number; primary_guest_id: number; check_in: string; stay_type: string; expected_check_out: string | null }>();
+    if (!stay) return Response.json({ error: "La habitación no tiene una estadía activa para corregir." }, { status: 409 });
+    const entityId = field.entityType === "GUEST" ? stay.primary_guest_id : stay.id;
+    if (fieldName === "full_name" && !proposedValue) return Response.json({ error: "El nombre del huésped no puede quedar vacío." }, { status: 400 });
+    if (fieldName === "ci") {
+      proposedValue = normalizeCi(proposedValue);
+      if (!proposedValue) return Response.json({ error: "Indica un CI válido." }, { status: 400 });
+      const duplicate = await env.DB.prepare("SELECT id FROM guests WHERE upper(replace(replace(replace(ci, ' ', ''), '-', ''), '.', '')) = ? AND id != ?").bind(proposedValue, entityId).first();
+      if (duplicate) return Response.json({ error: "Ese CI ya pertenece a otro huésped." }, { status: 409 });
+    }
+    if (fieldName === "stay_type" && !["DIA", "SEMANA", "MES", "ARRENDAMIENTO"].includes(proposedValue)) return Response.json({ error: "Modalidad de estadía inválida." }, { status: 400 });
+    if (fieldName === "stay_type" && proposedValue !== "ARRENDAMIENTO" && !stay.expected_check_out) return Response.json({ error: "Primero registra una fecha prevista de salida para esa modalidad." }, { status: 400 });
+    if (fieldName === "expected_check_out" && proposedValue && !/^\d{4}-\d{2}-\d{2}$/.test(proposedValue)) return Response.json({ error: "Fecha prevista inválida." }, { status: 400 });
+    if (fieldName === "expected_check_out" && !proposedValue && stay.stay_type !== "ARRENDAMIENTO") return Response.json({ error: "La fecha prevista es obligatoria para estadías por día, semana o mes." }, { status: 400 });
+    const oldValue = await correctionValue(field.entityType, entityId, fieldName);
+    if (oldValue === null) return Response.json({ error: "No se encontró el registro a corregir." }, { status: 404 });
+    if (String(oldValue) === proposedValue) return Response.json({ error: "El valor propuesto es igual al valor actual." }, { status: 400 });
+    const pending = await env.DB.prepare("SELECT id FROM change_requests WHERE entity_type = ? AND entity_id = ? AND field_name = ? AND status = 'PENDIENTE' LIMIT 1").bind(field.entityType, entityId, fieldName).first();
+    if (pending) return Response.json({ error: "Ya existe una solicitud pendiente para este dato." }, { status: 409 });
+    const segment = await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number }>();
+    const actGenerated = segment ? await env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind IN ('ENTREGA', 'DEVOLUCION') LIMIT 1").bind(segment.id).first() : null;
+    const withinWindow = Date.now() - new Date(stay.check_in).getTime() <= 30 * 60 * 1000;
+    const direct = canConfigure || (user?.role === "RECEPCION" && withinWindow && !actGenerated);
+    if (direct) {
+      await applyCorrection(field.entityType, entityId, fieldName, proposedValue, now);
+      const result = await env.DB.prepare("INSERT INTO change_requests (room_id, entity_type, entity_id, field_name, old_value, proposed_value, reason, status, application_mode, requested_by_user_id, requested_by_name, requested_at, reviewed_by_user_id, reviewed_by_name, reviewed_at, review_note, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'APROBADA', 'DIRECTA', ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, field.entityType, entityId, fieldName, String(oldValue), proposedValue, reason, user?.id || 0, user?.name || "Usuario", now, canConfigure ? user?.id || null : null, canConfigure ? user?.name || null : null, canConfigure ? now : null, canConfigure ? "Corrección administrativa directa" : "Corrección dentro de los primeros 30 minutos", now).run();
+      await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'CORRECCION', ?, ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, "Corrección aplicada: " + field.label, reason, user?.name || "Usuario", now).run();
+      return Response.json({ ok: true, direct: true, requestId: Number(result.meta.last_row_id) });
+    }
+    const result = await env.DB.prepare("INSERT INTO change_requests (room_id, entity_type, entity_id, field_name, old_value, proposed_value, reason, status, application_mode, requested_by_user_id, requested_by_name, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', 'APROBACION', ?, ?, ?)").bind(roomId, field.entityType, entityId, fieldName, String(oldValue), proposedValue, reason, user?.id || 0, user?.name || "Recepción", now).run();
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SOLICITUD', ?, ?, 'PENDIENTE', ?, ?)").bind(roomId, stay.id, "Corrección pendiente: " + field.label, reason, user?.name || "Recepción", now).run();
+    return Response.json({ ok: true, pending: true, requestId: Number(result.meta.last_row_id) });
+  }
+
+  if (body.action === "correction_review") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede resolver solicitudes." }, { status: 403 });
+    const requestId = Number(body.requestId);
+    const decision = body.decision === "APROBADA" ? "APROBADA" : body.decision === "RECHAZADA" ? "RECHAZADA" : "";
+    const reviewNote = String(body.reviewNote || "").trim();
+    if (!requestId || !decision) return Response.json({ error: "Solicitud o decisión inválida." }, { status: 400 });
+    if (decision === "RECHAZADA" && !reviewNote) return Response.json({ error: "Indica el motivo del rechazo." }, { status: 400 });
+    const change = await env.DB.prepare("SELECT * FROM change_requests WHERE id = ? AND status = 'PENDIENTE'").bind(requestId).first<{ id: number; room_id: number; entity_type: "GUEST" | "STAY"; entity_id: number; field_name: string; old_value: string | null; proposed_value: string | null }>();
+    if (!change) return Response.json({ error: "La solicitud ya fue resuelta o no existe." }, { status: 409 });
+    const field = correctionFields[change.field_name];
+    if (!field || field.entityType !== change.entity_type) return Response.json({ error: "La solicitud contiene un campo inválido." }, { status: 409 });
+    if (decision === "APROBADA") {
+      const currentValue = await correctionValue(change.entity_type, change.entity_id, change.field_name);
+      if (String(currentValue ?? "") !== String(change.old_value ?? "")) return Response.json({ error: "El dato original cambió después de la solicitud. Rechaza esta solicitud y registra una nueva." }, { status: 409 });
+      await applyCorrection(change.entity_type, change.entity_id, change.field_name, String(change.proposed_value ?? ""), now);
+    }
+    await env.DB.prepare("UPDATE change_requests SET status = ?, reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ?, applied_at = ? WHERE id = ? AND status = 'PENDIENTE'").bind(decision, user?.id || null, user?.name || "Administración", now, reviewNote || (decision === "APROBADA" ? "Solicitud aprobada" : ""), decision === "APROBADA" ? now : null, requestId).run();
+    const activeStay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA' LIMIT 1").bind(change.room_id).first<{ id: number }>();
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'APROBACION', ?, ?, ?, ?, ?)").bind(change.room_id, activeStay?.id || null, (decision === "APROBADA" ? "Corrección aprobada: " : "Corrección rechazada: ") + field.label, reviewNote || "Solicitud aprobada", decision, user?.name || "Administración", now).run();
+    return Response.json({ ok: true, decision });
+  }
 
   if (body.action === "work_order_create") {
     const title = String(body.title || "").trim();
@@ -378,6 +480,8 @@ export async function POST(request: Request) {
   if (body.action === "checkin") {
     const primary = body.primary as { fullName?: string; ci?: string; phone?: string };
     if (!roomId || !primary?.fullName?.trim()) return Response.json({ error: "Falta el huésped titular." }, { status: 400 });
+    const stayType = ["DIA", "SEMANA", "MES", "ARRENDAMIENTO"].includes(String(body.stayType)) ? String(body.stayType) : "DIA";
+    if (stayType !== "ARRENDAMIENTO" && !body.expectedCheckOut) return Response.json({ error: "Indica la fecha prevista de salida." }, { status: 400 });
     const room = await env.DB.prepare("SELECT status, capacity, active FROM rooms WHERE id = ?").bind(roomId).first<{ status: string; capacity: number; active: number }>();
     if (room?.status !== "DISPONIBLE" || !room.active) return Response.json({ error: "La habitación ya no está disponible." }, { status: 409 });
     const companions = ((body.companions || []) as Array<{ fullName?: string; ci?: string; phone?: string; isMinor?: boolean }>).filter((companion) => companion.fullName?.trim());
@@ -406,7 +510,7 @@ export async function POST(request: Request) {
       primaryId = Number(guestResult.meta.last_row_id);
     }
 
-    const stayResult = await env.DB.prepare("INSERT INTO stays (room_id, primary_guest_id, stay_type, check_in, expected_check_out, status, notes, capacity_override, capacity_override_reason, capacity_authorized_by) VALUES (?, ?, ?, ?, ?, 'ACTIVA', ?, ?, ?, ?)").bind(roomId, primaryId, body.stayType || "DIA", now, body.expectedCheckOut || null, body.notes || "", overCapacity ? 1 : 0, overCapacity ? overrideReason : null, overCapacity ? user?.name || "Administración" : null).run();
+    const stayResult = await env.DB.prepare("INSERT INTO stays (room_id, primary_guest_id, stay_type, check_in, expected_check_out, status, notes, capacity_override, capacity_override_reason, capacity_authorized_by) VALUES (?, ?, ?, ?, ?, 'ACTIVA', ?, ?, ?, ?)").bind(roomId, primaryId, stayType, now, body.expectedCheckOut || null, body.notes || "", overCapacity ? 1 : 0, overCapacity ? overrideReason : null, overCapacity ? user?.name || "Administración" : null).run();
     const stayId = Number(stayResult.meta.last_row_id);
     const companionStatements = [env.DB.prepare("INSERT INTO stay_guests (stay_id, guest_id, is_primary) VALUES (?, ?, 1)").bind(stayId, primaryId)];
     for (const companion of companions) {
