@@ -81,7 +81,12 @@ export const stayGuests = sqliteTable("stay_guests", {
   stayId: integer("stay_id").notNull(),
   guestId: integer("guest_id").notNull(),
   isPrimary: integer("is_primary", { mode: "boolean" }).notNull(),
-});
+  joinedAt: text("joined_at"),
+  leftAt: text("left_at"),
+  addedBy: text("added_by"),
+  removedBy: text("removed_by"),
+  removalReason: text("removal_reason"),
+}, (table) => [index("idx_stay_guests_stay_active").on(table.stayId, table.leftAt)]);
 
 export const roomEvents = sqliteTable("room_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -210,3 +215,20 @@ export const changeRequests = sqliteTable("change_requests", {
   reviewNote: text("review_note"),
   appliedAt: text("applied_at"),
 }, (table) => [index("idx_change_requests_status_requested").on(table.status, table.requestedAt), index("idx_change_requests_entity_field").on(table.entityType, table.entityId, table.fieldName)]);
+
+export const auditLogs = sqliteTable("audit_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id"),
+  userName: text("user_name").notNull(),
+  userRole: text("user_role").notNull(),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: integer("entity_id"),
+  roomId: integer("room_id"),
+  oldValue: text("old_value"),
+  newValue: text("new_value"),
+  reason: text("reason").notNull().default(""),
+  approvalRequestId: integer("approval_request_id"),
+  sessionInfo: text("session_info"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_audit_logs_created").on(table.createdAt), index("idx_audit_logs_room_created").on(table.roomId, table.createdAt)]);

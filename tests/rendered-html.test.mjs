@@ -56,3 +56,36 @@ test("muestra vencimientos sin finalizar estadías automáticamente", async () =
   assert.match(route, /TAREA_VENCIDA/);
   assert.match(route, /TAREA_POR_VENCER/);
 });
+
+test("conserva el historial de acompañantes sin borrar permanencias", async () => {
+  const [route, dashboard, migration] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0010_short_mister_sinister.sql"), "utf8"),
+  ]);
+  assert.match(route, /occupant_add/);
+  assert.match(route, /occupant_remove/);
+  assert.match(route, /left_at IS NULL/);
+  assert.doesNotMatch(route, /DELETE FROM stay_guests/);
+  assert.match(dashboard, /function OccupantsManager/);
+  assert.match(route, /El titular no puede retirarse desde acompañantes/);
+  assert.match(migration, /ALTER TABLE `stay_guests` ADD `joined_at`/);
+  assert.match(migration, /ALTER TABLE `stay_guests` ADD `left_at`/);
+});
+
+test("unifica la auditoría y la limita a administración", async () => {
+  const [route, dashboard, migration] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0010_short_mister_sinister.sql"), "utf8"),
+  ]);
+  assert.match(route, /auditFeed/);
+  assert.match(route, /if \(role === "RECEPCION"\) return \{ results: \[\]/);
+  assert.match(route, /room_events/);
+  assert.match(route, /work_order_history/);
+  assert.match(route, /user_access_events/);
+  assert.match(route, /change_requests/);
+  assert.match(dashboard, /function AuditView/);
+  assert.match(dashboard, /data\.user\.role !== "RECEPCION"/);
+  assert.match(migration, /CREATE TABLE `audit_logs`/);
+});

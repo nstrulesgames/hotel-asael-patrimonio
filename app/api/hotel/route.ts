@@ -8,7 +8,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS guests (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, ci TEXT, phone TEXT, is_minor INTEGER NOT NULL DEFAULT 0, identification_pending INTEGER NOT NULL DEFAULT 0, updated_at TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS stays (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, primary_guest_id INTEGER NOT NULL, stay_type TEXT NOT NULL, check_in TEXT NOT NULL, expected_check_out TEXT, check_out TEXT, status TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', capacity_override INTEGER NOT NULL DEFAULT 0, capacity_override_reason TEXT, capacity_authorized_by TEXT)`,
   `CREATE TABLE IF NOT EXISTS stay_room_segments (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, sequence INTEGER NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, start_reason TEXT NOT NULL, end_reason TEXT, created_by TEXT NOT NULL, ended_by TEXT)`,
-  `CREATE TABLE IF NOT EXISTS stay_guests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, guest_id INTEGER NOT NULL, is_primary INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS stay_guests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, guest_id INTEGER NOT NULL, is_primary INTEGER NOT NULL DEFAULT 0, joined_at TEXT, left_at TEXT, added_by TEXT, removed_by TEXT, removal_reason TEXT)`,
   `CREATE TABLE IF NOT EXISTS room_events (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, phase TEXT NOT NULL DEFAULT 'GENERAL', category TEXT NOT NULL, filename TEXT NOT NULL, object_key TEXT NOT NULL, content_type TEXT NOT NULL, uploaded_by TEXT NOT NULL DEFAULT 'Hotel ASAEL', created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, notes TEXT NOT NULL DEFAULT '')`,
@@ -18,6 +18,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS work_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL, status TEXT NOT NULL, assigned_user_id INTEGER, due_at TEXT, blocks_room INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, started_by TEXT, completed_at TEXT, completed_by TEXT, cancelled_at TEXT, cancelled_by TEXT, cancellation_reason TEXT)`,
   `CREATE TABLE IF NOT EXISTS work_order_history (id INTEGER PRIMARY KEY AUTOINCREMENT, work_order_id INTEGER NOT NULL, action TEXT NOT NULL, from_status TEXT, to_status TEXT, detail TEXT NOT NULL DEFAULT '', performed_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS change_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, field_name TEXT NOT NULL, old_value TEXT, proposed_value TEXT, reason TEXT NOT NULL, status TEXT NOT NULL, application_mode TEXT NOT NULL, requested_by_user_id INTEGER NOT NULL, requested_by_name TEXT NOT NULL, requested_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT, applied_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, user_name TEXT NOT NULL, user_role TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, room_id INTEGER, old_value TEXT, new_value TEXT, reason TEXT NOT NULL DEFAULT '', approval_request_id INTEGER, session_info TEXT, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_rooms_floor_id ON rooms(floor_id)`,
   `CREATE INDEX IF NOT EXISTS idx_stays_room_status ON stays(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_events_room_created ON room_events(room_id, created_at)`,
@@ -34,6 +35,8 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_work_order_history_order_created ON work_order_history(work_order_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_change_requests_status_requested ON change_requests(status, requested_at)`,
   `CREATE INDEX IF NOT EXISTS idx_change_requests_entity_field ON change_requests(entity_type, entity_id, field_name)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_logs_room_created ON audit_logs(room_id, created_at)`,
 ];
 
 async function ensureDatabase() {
@@ -67,10 +70,17 @@ async function ensureDatabase() {
   if (!inspectionColumns.results.some((column) => column.name === "segment_id")) await db.prepare("ALTER TABLE inspections ADD COLUMN segment_id INTEGER").run();
   const turnoverColumns = await db.prepare("PRAGMA table_info(room_turnovers)").all<{ name: string }>();
   if (!turnoverColumns.results.some((column) => column.name === "segment_id")) await db.prepare("ALTER TABLE room_turnovers ADD COLUMN segment_id INTEGER").run();
+  const stayGuestColumns = await db.prepare("PRAGMA table_info(stay_guests)").all<{ name: string }>();
+  if (!stayGuestColumns.results.some((column) => column.name === "joined_at")) await db.prepare("ALTER TABLE stay_guests ADD COLUMN joined_at TEXT").run();
+  if (!stayGuestColumns.results.some((column) => column.name === "left_at")) await db.prepare("ALTER TABLE stay_guests ADD COLUMN left_at TEXT").run();
+  if (!stayGuestColumns.results.some((column) => column.name === "added_by")) await db.prepare("ALTER TABLE stay_guests ADD COLUMN added_by TEXT").run();
+  if (!stayGuestColumns.results.some((column) => column.name === "removed_by")) await db.prepare("ALTER TABLE stay_guests ADD COLUMN removed_by TEXT").run();
+  if (!stayGuestColumns.results.some((column) => column.name === "removal_reason")) await db.prepare("ALTER TABLE stay_guests ADD COLUMN removal_reason TEXT").run();
   await db.batch([
     db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_segment_id ON documents(segment_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_inspections_segment_kind ON inspections(segment_id, kind)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_work_order_id ON documents(work_order_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_stay_guests_stay_active ON stay_guests(stay_id, left_at)"),
   ]);
   await db.prepare(`INSERT INTO stay_room_segments (stay_id, room_id, sequence, started_at, ended_at, start_reason, end_reason, created_by, ended_by)
     SELECT s.id, s.room_id, 1, s.check_in, s.check_out, 'INGRESO', CASE WHEN s.status = 'FINALIZADA' THEN 'SALIDA' ELSE NULL END, 'Migración del sistema', CASE WHEN s.status = 'FINALIZADA' THEN 'Migración del sistema' ELSE NULL END
@@ -79,6 +89,7 @@ async function ensureDatabase() {
     db.prepare("UPDATE documents SET segment_id = (SELECT seg.id FROM stay_room_segments seg WHERE seg.stay_id = documents.stay_id AND seg.room_id = documents.room_id ORDER BY seg.sequence DESC LIMIT 1) WHERE segment_id IS NULL AND stay_id IS NOT NULL"),
     db.prepare("UPDATE inspections SET segment_id = (SELECT seg.id FROM stay_room_segments seg WHERE seg.stay_id = inspections.stay_id AND seg.room_id = inspections.room_id ORDER BY seg.sequence DESC LIMIT 1) WHERE segment_id IS NULL"),
     db.prepare("UPDATE room_turnovers SET segment_id = (SELECT seg.id FROM stay_room_segments seg WHERE seg.stay_id = room_turnovers.stay_id AND seg.room_id = room_turnovers.room_id ORDER BY seg.sequence DESC LIMIT 1) WHERE segment_id IS NULL"),
+    db.prepare("UPDATE stay_guests SET joined_at = (SELECT s.check_in FROM stays s WHERE s.id = stay_guests.stay_id), added_by = COALESCE(added_by, 'Migración del sistema') WHERE joined_at IS NULL"),
   ]);
   const floors = await db.prepare("SELECT COUNT(*) AS total FROM floors").first<{ total: number }>();
   if (!floors?.total) {
@@ -150,14 +161,36 @@ function userErrorResponse(error: unknown) {
   return null;
 }
 
+type AuditFeedRow = { source: string; id: number; action: string; entity_type: string; entity_id?: number; room_id?: number; room_number?: string; actor?: string; detail?: string; old_value?: string; new_value?: string; created_at: string };
+
+async function loadAuditFeed(role: string) {
+  if (role === "RECEPCION") return { results: [] as AuditFeedRow[] };
+  const parts = await Promise.all([
+    env.DB.prepare(`SELECT 'AUDITORIA' AS source, a.id, a.action, a.entity_type, a.entity_id, a.room_id, r.number AS room_number, a.user_name AS actor, a.reason AS detail, a.old_value, a.new_value, a.created_at
+      FROM audit_logs a LEFT JOIN rooms r ON r.id = a.room_id`).all<AuditFeedRow>(),
+    env.DB.prepare(`SELECT 'HABITACION' AS source, e.id, e.type AS action, 'ROOM_EVENT' AS entity_type, e.stay_id AS entity_id, e.room_id, r.number AS room_number, e.created_by AS actor, e.title || CASE WHEN e.detail != '' THEN ' · ' || e.detail ELSE '' END AS detail, NULL AS old_value, e.status AS new_value, e.created_at
+      FROM room_events e JOIN rooms r ON r.id = e.room_id`).all<AuditFeedRow>(),
+    env.DB.prepare(`SELECT 'TAREA' AS source, h.id, h.action, 'WORK_ORDER' AS entity_type, h.work_order_id AS entity_id, w.room_id, r.number AS room_number, h.performed_by AS actor, h.detail, h.from_status AS old_value, h.to_status AS new_value, h.created_at
+      FROM work_order_history h JOIN work_orders w ON w.id = h.work_order_id JOIN rooms r ON r.id = w.room_id`).all<AuditFeedRow>(),
+    env.DB.prepare(`SELECT 'ACCESO' AS source, ua.id, ua.action, 'USER' AS entity_type, ua.user_id AS entity_id, NULL AS room_id, NULL AS room_number, ua.performed_by AS actor, ua.reason AS detail, NULL AS old_value, u.email AS new_value, ua.created_at
+      FROM user_access_events ua JOIN users u ON u.id = ua.user_id`).all<AuditFeedRow>(),
+    env.DB.prepare(`SELECT 'APROBACION' AS source, c.id, 'SOLICITUD_' || c.status AS action, c.entity_type, c.entity_id, c.room_id, r.number AS room_number, c.requested_by_name AS actor, c.reason AS detail, c.old_value, c.proposed_value AS new_value, c.requested_at AS created_at
+      FROM change_requests c JOIN rooms r ON r.id = c.room_id`).all<AuditFeedRow>(),
+    env.DB.prepare(`SELECT 'APROBACION' AS source, -c.id AS id, 'RESOLUCION_' || c.status AS action, c.entity_type, c.entity_id, c.room_id, r.number AS room_number, c.reviewed_by_name AS actor, COALESCE(c.review_note, '') AS detail, c.old_value, c.proposed_value AS new_value, c.reviewed_at AS created_at
+      FROM change_requests c JOIN rooms r ON r.id = c.room_id WHERE c.reviewed_at IS NOT NULL`).all<AuditFeedRow>(),
+  ]);
+  const results = parts.flatMap((part) => part.results).sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))).slice(0, 500);
+  return { results };
+}
+
 export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests] = await Promise.all([
+  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, auditFeed] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
-      (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id) AS guest_count,
+      (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id AND sg.left_at IS NULL) AS guest_count,
       t.id AS turnover_id, t.status AS turnover_status, t.cleaning_started_at, t.cleaning_started_by, t.cleaning_completed_at, t.cleaning_completed_by,
       COALESCE((SELECT seg.id FROM stay_room_segments seg WHERE seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL ORDER BY seg.sequence DESC LIMIT 1), t.segment_id) AS current_segment_id
       FROM rooms r
@@ -202,8 +235,13 @@ export async function GET(request: Request) {
     env.DB.prepare("SELECT * FROM work_order_history ORDER BY created_at DESC").all(),
     env.DB.prepare(`SELECT c.*, r.number AS room_number FROM change_requests c JOIN rooms r ON r.id = c.room_id
       WHERE ? != 'RECEPCION' OR c.requested_by_user_id = ? ORDER BY CASE c.status WHEN 'PENDIENTE' THEN 0 ELSE 1 END, c.requested_at DESC`).bind(user?.role || "RECEPCION", user?.id || 0).all(),
+    env.DB.prepare(`SELECT sg.id, sg.stay_id, sg.guest_id, sg.is_primary, sg.joined_at, sg.left_at, sg.added_by, sg.removed_by, sg.removal_reason,
+      g.full_name, g.ci, g.phone, g.is_minor, g.identification_pending, s.room_id, r.number AS room_number
+      FROM stay_guests sg JOIN guests g ON g.id = sg.guest_id JOIN stays s ON s.id = sg.stay_id JOIN rooms r ON r.id = s.room_id
+      ORDER BY sg.stay_id, sg.is_primary DESC, sg.joined_at`).all(),
+    loadAuditFeed(user?.role || "RECEPCION"),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, auditFeed: auditFeed.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -240,6 +278,13 @@ async function applyCorrection(entityType: "GUEST" | "STAY", entityId: number, f
   throw new Error("Campo de corrección inválido.");
 }
 
+async function logAudit(request: Request, user: { id?: number; name?: string; role?: string } | null, entry: { action: string; entityType: string; entityId?: number | null; roomId?: number | null; oldValue?: unknown; newValue?: unknown; reason?: string; approvalRequestId?: number | null }, createdAt: string) {
+  const sessionInfo = JSON.stringify({ userAgent: request.headers.get("user-agent") || "No disponible" });
+  const serialize = (value: unknown) => value === undefined || value === null ? null : typeof value === "string" ? value : JSON.stringify(value);
+  await env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, room_id, old_value, new_value, reason, approval_request_id, session_info, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(user?.id || null, user?.name || "Usuario", user?.role || "DESCONOCIDO", entry.action, entry.entityType, entry.entityId || null, entry.roomId || null, serialize(entry.oldValue), serialize(entry.newValue), entry.reason || "", entry.approvalRequestId || null, sessionInfo, createdAt).run();
+}
+
 export async function POST(request: Request) {
   await ensureDatabase();
   let user;
@@ -248,6 +293,53 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   const roomId = Number(body.roomId);
   const canConfigure = user?.role === "PROPIETARIO" || user?.role === "ADMINISTRADOR";
+
+  if (body.action === "occupant_add") {
+    const fullName = String(body.fullName || "").trim();
+    const ci = normalizeCi(body.ci);
+    const phone = String(body.phone || "").trim();
+    const isMinor = body.isMinor === true;
+    if (!roomId || !fullName) return Response.json({ error: "Indica el nombre del acompañante." }, { status: 400 });
+    const stay = await env.DB.prepare("SELECT s.id, r.capacity FROM stays s JOIN rooms r ON r.id = s.room_id WHERE s.room_id = ? AND s.status = 'ACTIVA'").bind(roomId).first<{ id: number; capacity: number }>();
+    if (!stay) return Response.json({ error: "La habitación no tiene una estadía activa." }, { status: 409 });
+    const activeCount = await env.DB.prepare("SELECT COUNT(*) AS total FROM stay_guests WHERE stay_id = ? AND left_at IS NULL").bind(stay.id).first<{ total: number }>();
+    const overCapacity = Number(activeCount?.total || 0) + 1 > stay.capacity;
+    const overrideReason = String(body.capacityOverrideReason || "").trim();
+    if (overCapacity && body.capacityOverride !== true) return Response.json({ error: "La habitación excedería su capacidad. Se requiere autorización administrativa." }, { status: 409 });
+    if (overCapacity && !canConfigure) return Response.json({ error: "Solo propietario o administrador puede autorizar la sobrecapacidad." }, { status: 403 });
+    if (overCapacity && !overrideReason) return Response.json({ error: "Indica el motivo de la autorización de sobrecapacidad." }, { status: 400 });
+    let guestId: number;
+    const existing = ci ? await env.DB.prepare("SELECT id FROM guests WHERE upper(replace(replace(replace(ci, ' ', ''), '-', ''), '.', '')) = ? LIMIT 1").bind(ci).first<{ id: number }>() : null;
+    if (existing) {
+      const activeElsewhere = await env.DB.prepare("SELECT sg.id FROM stay_guests sg JOIN stays s ON s.id = sg.stay_id WHERE sg.guest_id = ? AND sg.left_at IS NULL AND s.status = 'ACTIVA' LIMIT 1").bind(existing.id).first();
+      if (activeElsewhere) return Response.json({ error: "Esta persona ya figura en una estadía activa." }, { status: 409 });
+      guestId = existing.id;
+      await env.DB.prepare("UPDATE guests SET full_name = ?, phone = COALESCE(NULLIF(?, ''), phone), is_minor = ?, identification_pending = 0, updated_at = ? WHERE id = ?").bind(fullName, phone, isMinor ? 1 : 0, now, guestId).run();
+    } else {
+      const result = await env.DB.prepare("INSERT INTO guests (full_name, ci, phone, is_minor, identification_pending, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(fullName, ci || null, phone || null, isMinor ? 1 : 0, ci ? 0 : 1, now, now).run();
+      guestId = Number(result.meta.last_row_id);
+    }
+    const result = await env.DB.prepare("INSERT INTO stay_guests (stay_id, guest_id, is_primary, joined_at, added_by) VALUES (?, ?, 0, ?, ?)").bind(stay.id, guestId, now, user?.name || "Recepción").run();
+    const occupantId = Number(result.meta.last_row_id);
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'OCUPANTE', 'Acompañante añadido', ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, fullName + (overCapacity ? " · Sobrecapacidad autorizada" : ""), user?.name || "Recepción", now).run();
+    await logAudit(request, user, { action: "ACOMPANANTE_AGREGADO", entityType: "STAY_OCCUPANT", entityId: occupantId, roomId, newValue: { fullName, ci: ci || null, phone: phone || null, isMinor, joinedAt: now }, reason: overCapacity ? overrideReason : "Alta durante estadía" }, now);
+    return Response.json({ ok: true, occupantId });
+  }
+
+  if (body.action === "occupant_remove") {
+    const occupantId = Number(body.occupantId);
+    const reason = String(body.reason || "").trim();
+    if (!occupantId || !reason) return Response.json({ error: "Indica el acompañante y el motivo de retiro." }, { status: 400 });
+    const occupant = await env.DB.prepare("SELECT sg.id, sg.stay_id, sg.guest_id, sg.is_primary, g.full_name FROM stay_guests sg JOIN guests g ON g.id = sg.guest_id JOIN stays s ON s.id = sg.stay_id WHERE sg.id = ? AND s.room_id = ? AND s.status = 'ACTIVA' AND sg.left_at IS NULL").bind(occupantId, roomId).first<{ id: number; stay_id: number; guest_id: number; is_primary: number; full_name: string }>();
+    if (!occupant) return Response.json({ error: "El acompañante ya fue retirado o no pertenece a esta estadía." }, { status: 409 });
+    if (occupant.is_primary) return Response.json({ error: "El titular no puede retirarse desde acompañantes. Utiliza el flujo de cambio de titularidad." }, { status: 409 });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE stay_guests SET left_at = ?, removed_by = ?, removal_reason = ? WHERE id = ? AND left_at IS NULL").bind(now, user?.name || "Recepción", reason, occupantId),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'OCUPANTE', 'Acompañante retirado', ?, 'COMPLETADO', ?, ?)").bind(roomId, occupant.stay_id, occupant.full_name + " · " + reason, user?.name || "Recepción", now),
+    ]);
+    await logAudit(request, user, { action: "ACOMPANANTE_RETIRADO", entityType: "STAY_OCCUPANT", entityId: occupantId, roomId, oldValue: { fullName: occupant.full_name, active: true }, newValue: { active: false, leftAt: now }, reason }, now);
+    return Response.json({ ok: true });
+  }
 
   if (body.action === "correction_submit") {
     const fieldName = String(body.fieldName || "");
@@ -282,11 +374,15 @@ export async function POST(request: Request) {
       await applyCorrection(field.entityType, entityId, fieldName, proposedValue, now);
       const result = await env.DB.prepare("INSERT INTO change_requests (room_id, entity_type, entity_id, field_name, old_value, proposed_value, reason, status, application_mode, requested_by_user_id, requested_by_name, requested_at, reviewed_by_user_id, reviewed_by_name, reviewed_at, review_note, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'APROBADA', 'DIRECTA', ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, field.entityType, entityId, fieldName, String(oldValue), proposedValue, reason, user?.id || 0, user?.name || "Usuario", now, canConfigure ? user?.id || null : null, canConfigure ? user?.name || null : null, canConfigure ? now : null, canConfigure ? "Corrección administrativa directa" : "Corrección dentro de los primeros 30 minutos", now).run();
       await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'CORRECCION', ?, ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, "Corrección aplicada: " + field.label, reason, user?.name || "Usuario", now).run();
-      return Response.json({ ok: true, direct: true, requestId: Number(result.meta.last_row_id) });
+      const requestId = Number(result.meta.last_row_id);
+      await logAudit(request, user, { action: "CORRECCION_DIRECTA", entityType: field.entityType, entityId, roomId, oldValue, newValue: proposedValue, reason, approvalRequestId: requestId }, now);
+      return Response.json({ ok: true, direct: true, requestId });
     }
     const result = await env.DB.prepare("INSERT INTO change_requests (room_id, entity_type, entity_id, field_name, old_value, proposed_value, reason, status, application_mode, requested_by_user_id, requested_by_name, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', 'APROBACION', ?, ?, ?)").bind(roomId, field.entityType, entityId, fieldName, String(oldValue), proposedValue, reason, user?.id || 0, user?.name || "Recepción", now).run();
     await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SOLICITUD', ?, ?, 'PENDIENTE', ?, ?)").bind(roomId, stay.id, "Corrección pendiente: " + field.label, reason, user?.name || "Recepción", now).run();
-    return Response.json({ ok: true, pending: true, requestId: Number(result.meta.last_row_id) });
+    const requestId = Number(result.meta.last_row_id);
+    await logAudit(request, user, { action: "CORRECCION_SOLICITADA", entityType: field.entityType, entityId, roomId, oldValue, newValue: proposedValue, reason, approvalRequestId: requestId }, now);
+    return Response.json({ ok: true, pending: true, requestId });
   }
 
   if (body.action === "correction_review") {
@@ -308,6 +404,7 @@ export async function POST(request: Request) {
     await env.DB.prepare("UPDATE change_requests SET status = ?, reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ?, applied_at = ? WHERE id = ? AND status = 'PENDIENTE'").bind(decision, user?.id || null, user?.name || "Administración", now, reviewNote || (decision === "APROBADA" ? "Solicitud aprobada" : ""), decision === "APROBADA" ? now : null, requestId).run();
     const activeStay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA' LIMIT 1").bind(change.room_id).first<{ id: number }>();
     await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'APROBACION', ?, ?, ?, ?, ?)").bind(change.room_id, activeStay?.id || null, (decision === "APROBADA" ? "Corrección aprobada: " : "Corrección rechazada: ") + field.label, reviewNote || "Solicitud aprobada", decision, user?.name || "Administración", now).run();
+    await logAudit(request, user, { action: decision === "APROBADA" ? "CORRECCION_APROBADA" : "CORRECCION_RECHAZADA", entityType: change.entity_type, entityId: change.entity_id, roomId: change.room_id, oldValue: change.old_value, newValue: change.proposed_value, reason: reviewNote || "Solicitud aprobada", approvalRequestId: requestId }, now);
     return Response.json({ ok: true, decision });
   }
 
@@ -501,7 +598,7 @@ export async function POST(request: Request) {
     let primaryId: number;
     const existingPrimary = primaryCi ? await env.DB.prepare("SELECT id FROM guests WHERE upper(replace(replace(replace(ci, ' ', ''), '-', ''), '.', '')) = ? LIMIT 1").bind(primaryCi).first<{ id: number }>() : null;
     if (existingPrimary) {
-      const activeStay = await env.DB.prepare("SELECT id FROM stays WHERE primary_guest_id = ? AND status = 'ACTIVA' LIMIT 1").bind(existingPrimary.id).first();
+      const activeStay = await env.DB.prepare("SELECT sg.id FROM stay_guests sg JOIN stays s ON s.id = sg.stay_id WHERE sg.guest_id = ? AND sg.left_at IS NULL AND s.status = 'ACTIVA' LIMIT 1").bind(existingPrimary.id).first();
       if (activeStay) return Response.json({ error: "Este huésped ya figura como titular de una estadía activa." }, { status: 409 });
       primaryId = existingPrimary.id;
       await env.DB.prepare("UPDATE guests SET full_name = ?, phone = COALESCE(NULLIF(?, ''), phone), ci = ?, identification_pending = 0, updated_at = ? WHERE id = ?").bind(primary.fullName.trim(), primary.phone || "", primaryCi, now, primaryId).run();
@@ -512,18 +609,20 @@ export async function POST(request: Request) {
 
     const stayResult = await env.DB.prepare("INSERT INTO stays (room_id, primary_guest_id, stay_type, check_in, expected_check_out, status, notes, capacity_override, capacity_override_reason, capacity_authorized_by) VALUES (?, ?, ?, ?, ?, 'ACTIVA', ?, ?, ?, ?)").bind(roomId, primaryId, stayType, now, body.expectedCheckOut || null, body.notes || "", overCapacity ? 1 : 0, overCapacity ? overrideReason : null, overCapacity ? user?.name || "Administración" : null).run();
     const stayId = Number(stayResult.meta.last_row_id);
-    const companionStatements = [env.DB.prepare("INSERT INTO stay_guests (stay_id, guest_id, is_primary) VALUES (?, ?, 1)").bind(stayId, primaryId)];
+    const companionStatements = [env.DB.prepare("INSERT INTO stay_guests (stay_id, guest_id, is_primary, joined_at, added_by) VALUES (?, ?, 1, ?, ?)").bind(stayId, primaryId, now, user?.name || "Recepción")];
     for (const companion of companions) {
       const companionCi = normalizeCi(companion.ci);
       const existing = companionCi ? await env.DB.prepare("SELECT id FROM guests WHERE upper(replace(replace(replace(ci, ' ', ''), '-', ''), '.', '')) = ? LIMIT 1").bind(companionCi).first<{ id: number }>() : null;
       let guestId = existing?.id;
       if (guestId) {
+        const activeMembership = await env.DB.prepare("SELECT sg.id FROM stay_guests sg JOIN stays s ON s.id = sg.stay_id WHERE sg.guest_id = ? AND sg.left_at IS NULL AND s.status = 'ACTIVA' LIMIT 1").bind(guestId).first();
+        if (activeMembership) return Response.json({ error: "Uno de los acompañantes ya figura en otra estadía activa." }, { status: 409 });
         await env.DB.prepare("UPDATE guests SET full_name = ?, phone = COALESCE(NULLIF(?, ''), phone), ci = ?, identification_pending = 0, is_minor = ?, updated_at = ? WHERE id = ?").bind(companion.fullName!.trim(), companion.phone || "", companionCi, companion.isMinor ? 1 : 0, now, guestId).run();
       } else {
         const result = await env.DB.prepare("INSERT INTO guests (full_name, ci, phone, is_minor, identification_pending, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(companion.fullName!.trim(), companionCi || null, companion.phone || null, companion.isMinor ? 1 : 0, companionCi ? 0 : 1, now, now).run();
         guestId = Number(result.meta.last_row_id);
       }
-      companionStatements.push(env.DB.prepare("INSERT INTO stay_guests (stay_id, guest_id, is_primary) VALUES (?, ?, 0)").bind(stayId, guestId));
+      companionStatements.push(env.DB.prepare("INSERT INTO stay_guests (stay_id, guest_id, is_primary, joined_at, added_by) VALUES (?, ?, 0, ?, ?)").bind(stayId, guestId, now, user?.name || "Recepción"));
     }
     await env.DB.batch([
       ...companionStatements,
@@ -559,6 +658,7 @@ export async function POST(request: Request) {
     if (existingTurnover) return Response.json({ error: "Esta habitación ya tiene un cierre operativo pendiente." }, { status: 409 });
     await env.DB.batch([
       env.DB.prepare("UPDATE stays SET status = 'FINALIZADA', check_out = ? WHERE id = ?").bind(now, stay.id),
+      env.DB.prepare("UPDATE stay_guests SET left_at = COALESCE(left_at, ?), removed_by = COALESCE(removed_by, ?), removal_reason = COALESCE(removal_reason, 'Salida de la estadía') WHERE stay_id = ? AND left_at IS NULL").bind(now, user?.name || "Recepción", stay.id),
       env.DB.prepare("UPDATE stay_room_segments SET ended_at = ?, end_reason = 'SALIDA', ended_by = ? WHERE id = ?").bind(now, user?.name || "Recepción", segment.id),
       env.DB.prepare("UPDATE rooms SET status = 'LIMPIEZA' WHERE id = ?").bind(roomId),
       env.DB.prepare("INSERT INTO room_turnovers (stay_id, room_id, segment_id, status, created_at) VALUES (?, ?, ?, 'PENDIENTE', ?)").bind(stay.id, roomId, segment.id, now),
@@ -572,7 +672,7 @@ export async function POST(request: Request) {
     const reason = String(body.reason || "").trim();
     if (!reason) return Response.json({ error: "Indica el motivo del traslado." }, { status: 400 });
     if (destinationId === roomId) return Response.json({ error: "Selecciona una habitación diferente." }, { status: 400 });
-    const stay = await env.DB.prepare("SELECT id, (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = stays.id) AS guest_count FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number; guest_count: number }>();
+    const stay = await env.DB.prepare("SELECT id, (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = stays.id AND sg.left_at IS NULL) AS guest_count FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number; guest_count: number }>();
     const destination = await env.DB.prepare("SELECT number, status, active, capacity FROM rooms WHERE id = ?").bind(destinationId).first<{ number: string; status: string; active: number; capacity: number }>();
     if (!stay || destination?.status !== "DISPONIBLE" || !destination.active) return Response.json({ error: "La habitación de destino no está disponible." }, { status: 409 });
     const overCapacity = Number(stay.guest_count || 1) > destination.capacity;
