@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 const allowedCategories = new Set([
   "VISTA_GENERAL", "CAMA", "MUEBLES", "BANO", "TELEVISION", "VENTILADOR", "DANOS", "OTRA_EVIDENCIA",
   "CONTRATO", "ACTA_ENTREGA_FIRMADA", "ACTA_DEVOLUCION_FIRMADA",
+  "TRABAJO_ANTES", "TRABAJO_DESPUES",
 ]);
 
 async function authorizedUser(request: Request) {
@@ -37,12 +38,23 @@ export async function POST(request: Request) {
   if (!(file instanceof File)) return Response.json({ error: "Selecciona un archivo." }, { status: 400 });
   if (file.size > 15 * 1024 * 1024) return Response.json({ error: "El archivo supera el máximo de 15 MB." }, { status: 413 });
   if (!file.type.startsWith("image/") && file.type !== "application/pdf") return Response.json({ error: "Solo se permiten imágenes o PDF." }, { status: 415 });
-  const roomId = Number(form.get("roomId"));
-  const stayId = Number(form.get("stayId")) || null;
-  const segmentId = Number(form.get("segmentId")) || null;
+  let roomId = Number(form.get("roomId"));
+  let stayId = Number(form.get("stayId")) || null;
+  let segmentId = Number(form.get("segmentId")) || null;
+  const workOrderId = Number(form.get("workOrderId")) || null;
   const phase = ["GENERAL", "ENTREGA", "DEVOLUCION"].includes(String(form.get("phase"))) ? String(form.get("phase")) : "GENERAL";
   const category = String(form.get("category") || "OTRA_EVIDENCIA");
   if (!roomId || !allowedCategories.has(category)) return Response.json({ error: "Habitación o categoría inválida." }, { status: 400 });
+  if (workOrderId) {
+    const order = await env.DB.prepare("SELECT room_id, stay_id, segment_id FROM work_orders WHERE id = ?").bind(workOrderId).first<{ room_id: number; stay_id: number | null; segment_id: number | null }>();
+    if (!order || order.room_id !== roomId) return Response.json({ error: "La tarea no corresponde a esta habitación." }, { status: 409 });
+    roomId = order.room_id;
+    stayId = order.stay_id;
+    segmentId = order.segment_id;
+    if (!["TRABAJO_ANTES", "TRABAJO_DESPUES"].includes(category)) return Response.json({ error: "Selecciona evidencia de antes o después del trabajo." }, { status: 400 });
+  } else if (["TRABAJO_ANTES", "TRABAJO_DESPUES"].includes(category)) {
+    return Response.json({ error: "La evidencia debe asociarse a una tarea." }, { status: 400 });
+  }
   if (stayId) {
     const stay = await env.DB.prepare("SELECT id FROM stays WHERE id = ? AND room_id = ?").bind(stayId, roomId).first();
     const segment = segmentId ? await env.DB.prepare("SELECT id FROM stay_room_segments WHERE id = ? AND stay_id = ? AND room_id = ?").bind(segmentId, stayId, roomId).first() : null;
@@ -50,8 +62,8 @@ export async function POST(request: Request) {
     if (!segment) return Response.json({ error: "Selecciona el segmento correcto de la estadía." }, { status: 409 });
   }
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
-  const key = `hotel-asael/${roomId}/${stayId || "sin-estadia"}/${crypto.randomUUID()}-${safeName}`;
+  const key = `hotel-asael/${roomId}/${stayId || "sin-estadia"}/${workOrderId ? "tarea-" + workOrderId : "habitacion"}/${crypto.randomUUID()}-${safeName}`;
   await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
-  const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, segment_id, phase, category, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, segmentId, phase, category, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
+  const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, segment_id, work_order_id, phase, category, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, segmentId, workOrderId, phase, category, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
   return Response.json({ ok: true, documentId: Number(result.meta.last_row_id) });
 }

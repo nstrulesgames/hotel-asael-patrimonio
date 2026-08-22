@@ -15,6 +15,8 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS inspections (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER, kind TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS inspection_items (id INTEGER PRIMARY KEY AUTOINCREMENT, inspection_id INTEGER NOT NULL, inventory_item_id INTEGER, name TEXT NOT NULL, quantity INTEGER NOT NULL, condition TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '')`,
   `CREATE TABLE IF NOT EXISTS room_turnovers (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER, status TEXT NOT NULL, cleaning_started_at TEXT, cleaning_started_by TEXT, cleaning_completed_at TEXT, cleaning_completed_by TEXT, final_inspection_id INTEGER, approved_at TEXT, approved_by TEXT, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS work_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL, status TEXT NOT NULL, assigned_user_id INTEGER, due_at TEXT, blocks_room INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, started_by TEXT, completed_at TEXT, completed_by TEXT, cancelled_at TEXT, cancelled_by TEXT, cancellation_reason TEXT)`,
+  `CREATE TABLE IF NOT EXISTS work_order_history (id INTEGER PRIMARY KEY AUTOINCREMENT, work_order_id INTEGER NOT NULL, action TEXT NOT NULL, from_status TEXT, to_status TEXT, detail TEXT NOT NULL DEFAULT '', performed_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_rooms_floor_id ON rooms(floor_id)`,
   `CREATE INDEX IF NOT EXISTS idx_stays_room_status ON stays(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_events_room_created ON room_events(room_id, created_at)`,
@@ -26,6 +28,9 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_guests_ci ON guests(ci)`,
   `CREATE INDEX IF NOT EXISTS idx_turnovers_room_status ON room_turnovers(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_stay_segments_stay_sequence ON stay_room_segments(stay_id, sequence)`,
+  `CREATE INDEX IF NOT EXISTS idx_work_orders_room_status ON work_orders(room_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_work_orders_status_priority ON work_orders(status, priority)`,
+  `CREATE INDEX IF NOT EXISTS idx_work_order_history_order_created ON work_order_history(work_order_id, created_at)`,
 ];
 
 type DbResult<T> = { results: T[] };
@@ -56,6 +61,7 @@ async function ensureDatabase() {
   if (!documentColumns.results.some((column) => column.name === "uploaded_by")) await db.prepare("ALTER TABLE documents ADD COLUMN uploaded_by TEXT NOT NULL DEFAULT 'Hotel ASAEL'").run();
   if (!documentColumns.results.some((column) => column.name === "phase")) await db.prepare("ALTER TABLE documents ADD COLUMN phase TEXT NOT NULL DEFAULT 'GENERAL'").run();
   if (!documentColumns.results.some((column) => column.name === "segment_id")) await db.prepare("ALTER TABLE documents ADD COLUMN segment_id INTEGER").run();
+  if (!documentColumns.results.some((column) => column.name === "work_order_id")) await db.prepare("ALTER TABLE documents ADD COLUMN work_order_id INTEGER").run();
   const inspectionColumns = await db.prepare("PRAGMA table_info(inspections)").all<{ name: string }>();
   if (!inspectionColumns.results.some((column) => column.name === "segment_id")) await db.prepare("ALTER TABLE inspections ADD COLUMN segment_id INTEGER").run();
   const turnoverColumns = await db.prepare("PRAGMA table_info(room_turnovers)").all<{ name: string }>();
@@ -63,6 +69,7 @@ async function ensureDatabase() {
   await db.batch([
     db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_segment_id ON documents(segment_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_inspections_segment_kind ON inspections(segment_id, kind)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_work_order_id ON documents(work_order_id)"),
   ]);
   await db.prepare(`INSERT INTO stay_room_segments (stay_id, room_id, sequence, started_at, ended_at, start_reason, end_reason, created_by, ended_by)
     SELECT s.id, s.room_id, 1, s.check_in, s.check_out, 'INGRESO', CASE WHEN s.status = 'FINALIZADA' THEN 'SALIDA' ELSE NULL END, 'Migración del sistema', CASE WHEN s.status = 'FINALIZADA' THEN 'Migración del sistema' ELSE NULL END
@@ -146,7 +153,7 @@ export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments] = await Promise.all([
+  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, g.full_name AS guest_name, g.ci AS guest_ci,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id) AS guest_count,
@@ -161,7 +168,7 @@ export async function GET(request: Request) {
     env.DB.prepare("SELECT * FROM inspections ORDER BY created_at DESC").all(),
     env.DB.prepare("SELECT * FROM inspection_items ORDER BY id").all(),
     env.DB.prepare("SELECT id, name, email, role, active, created_at FROM users ORDER BY active DESC, name").all(),
-    env.DB.prepare("SELECT id, room_id, stay_id, segment_id, phase, category, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
+    env.DB.prepare("SELECT id, room_id, stay_id, segment_id, work_order_id, phase, category, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
     env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, seg.started_at AS created_at
       FROM stays s JOIN rooms r ON r.id = s.room_id JOIN stay_room_segments seg ON seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL
       WHERE s.status = 'ACTIVA' AND julianday('now') - julianday(seg.started_at) >= 1
@@ -176,8 +183,15 @@ export async function GET(request: Request) {
       EXISTS(SELECT 1 FROM documents d WHERE d.segment_id = seg.id AND d.category = 'ACTA_ENTREGA_FIRMADA') AS delivery_signed,
       EXISTS(SELECT 1 FROM documents d WHERE d.segment_id = seg.id AND d.category = 'ACTA_DEVOLUCION_FIRMADA') AS return_signed
       FROM stay_room_segments seg JOIN rooms r ON r.id = seg.room_id ORDER BY seg.stay_id, seg.sequence`).all(),
+    env.DB.prepare(`SELECT w.*, r.number AS room_number, u.name AS assigned_name, u.active AS assigned_active,
+      (SELECT COUNT(*) FROM documents d WHERE d.work_order_id = w.id AND d.category = 'TRABAJO_ANTES') AS before_count,
+      (SELECT COUNT(*) FROM documents d WHERE d.work_order_id = w.id AND d.category = 'TRABAJO_DESPUES') AS after_count
+      FROM work_orders w JOIN rooms r ON r.id = w.room_id LEFT JOIN users u ON u.id = w.assigned_user_id
+      ORDER BY CASE w.status WHEN 'EN_PROCESO' THEN 0 WHEN 'PENDIENTE' THEN 1 WHEN 'COMPLETADO' THEN 2 ELSE 3 END,
+      CASE w.priority WHEN 'URGENTE' THEN 0 WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 ELSE 3 END, w.created_at DESC`).all(),
+    env.DB.prepare("SELECT * FROM work_order_history ORDER BY created_at DESC").all(),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -194,6 +208,93 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   const roomId = Number(body.roomId);
   const canConfigure = user?.role === "PROPIETARIO" || user?.role === "ADMINISTRADOR";
+
+  if (body.action === "work_order_create") {
+    const title = String(body.title || "").trim();
+    const detail = String(body.detail || "").trim();
+    const type = ["LIMPIEZA", "MANTENIMIENTO", "REPARACION", "MUEBLES", "DANO", "OTRO"].includes(String(body.type)) ? String(body.type) : "OTRO";
+    const priority = ["BAJA", "MEDIA", "ALTA", "URGENTE"].includes(String(body.priority)) ? String(body.priority) : "MEDIA";
+    const assignedUserId = Number(body.assignedUserId) || null;
+    if (!roomId || !title) return Response.json({ error: "Selecciona una habitación e indica el trabajo." }, { status: 400 });
+    const room = await env.DB.prepare("SELECT number, status, active FROM rooms WHERE id = ?").bind(roomId).first<{ number: string; status: string; active: number }>();
+    if (!room?.active) return Response.json({ error: "La habitación no está activa." }, { status: 409 });
+    if (assignedUserId) {
+      const assignee = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND active = 1").bind(assignedUserId).first();
+      if (!assignee) return Response.json({ error: "El responsable seleccionado no tiene acceso activo." }, { status: 409 });
+    }
+    const activeStay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA' ORDER BY check_in DESC LIMIT 1").bind(roomId).first<{ id: number }>();
+    const segment = activeStay ? await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(activeStay.id, roomId).first<{ id: number }>() : null;
+    const blocksRoom = body.blocksRoom === true ? 1 : 0;
+    const result = await env.DB.prepare("INSERT INTO work_orders (room_id, stay_id, segment_id, type, title, detail, priority, status, assigned_user_id, due_at, blocks_room, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', ?, ?, ?, ?, ?)").bind(roomId, activeStay?.id || null, segment?.id || null, type, title, detail, priority, assignedUserId, body.dueAt || null, blocksRoom, user?.name || "Recepción", now).run();
+    const workOrderId = Number(result.meta.last_row_id);
+    const statements = [
+      env.DB.prepare("INSERT INTO work_order_history (work_order_id, action, from_status, to_status, detail, performed_by, created_at) VALUES (?, 'CREADA', NULL, 'PENDIENTE', ?, ?, ?)").bind(workOrderId, detail || title, user?.name || "Recepción", now),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'PENDIENTE', ?, ?)").bind(roomId, activeStay?.id || null, type, "Tarea: " + title, priority + (assignedUserId ? " · Responsable asignado" : " · Sin responsable"), user?.name || "Recepción", now),
+    ];
+    if (blocksRoom && room.status === "DISPONIBLE") statements.push(env.DB.prepare("UPDATE rooms SET status = 'MANTENIMIENTO' WHERE id = ?").bind(roomId));
+    await env.DB.batch(statements);
+    return Response.json({ ok: true, workOrderId });
+  }
+
+  if (body.action === "work_order_assign") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede reasignar responsables." }, { status: 403 });
+    const workOrderId = Number(body.workOrderId);
+    const assignedUserId = Number(body.assignedUserId) || null;
+    const order = await env.DB.prepare("SELECT status, assigned_user_id FROM work_orders WHERE id = ?").bind(workOrderId).first<{ status: string; assigned_user_id: number | null }>();
+    if (!order) return Response.json({ error: "La tarea no existe." }, { status: 404 });
+    if (["COMPLETADO", "CANCELADO"].includes(order.status)) return Response.json({ error: "No se puede reasignar una tarea cerrada." }, { status: 409 });
+    let assignedName = "Sin responsable";
+    if (assignedUserId) {
+      const assignee = await env.DB.prepare("SELECT name FROM users WHERE id = ? AND active = 1").bind(assignedUserId).first<{ name: string }>();
+      if (!assignee) return Response.json({ error: "El responsable seleccionado no tiene acceso activo." }, { status: 409 });
+      assignedName = assignee.name;
+    }
+    await env.DB.batch([
+      env.DB.prepare("UPDATE work_orders SET assigned_user_id = ? WHERE id = ?").bind(assignedUserId, workOrderId),
+      env.DB.prepare("INSERT INTO work_order_history (work_order_id, action, from_status, to_status, detail, performed_by, created_at) VALUES (?, 'REASIGNADA', ?, ?, ?, ?, ?)").bind(workOrderId, order.status, order.status, "Responsable: " + assignedName, user?.name || "Administración", now),
+    ]);
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === "work_order_update") {
+    const workOrderId = Number(body.workOrderId);
+    const nextStatus = String(body.status || "");
+    const order = await env.DB.prepare("SELECT id, room_id, stay_id, type, title, status, assigned_user_id, blocks_room FROM work_orders WHERE id = ?").bind(workOrderId).first<{ id: number; room_id: number; stay_id: number | null; type: string; title: string; status: string; assigned_user_id: number | null; blocks_room: number }>();
+    if (!order) return Response.json({ error: "La tarea no existe." }, { status: 404 });
+    const transitions: Record<string, string[]> = { PENDIENTE: ["EN_PROCESO", "CANCELADO"], EN_PROCESO: ["COMPLETADO", "CANCELADO"] };
+    if (!transitions[order.status]?.includes(nextStatus)) return Response.json({ error: "Ese cambio de estado no está permitido." }, { status: 409 });
+    if (nextStatus === "CANCELADO" && !canConfigure) return Response.json({ error: "Solo administración puede cancelar tareas." }, { status: 403 });
+    if (nextStatus === "CANCELADO" && !String(body.reason || "").trim()) return Response.json({ error: "Indica el motivo de cancelación." }, { status: 400 });
+    if (!canConfigure && order.assigned_user_id && order.assigned_user_id !== user?.id) return Response.json({ error: "Esta tarea está asignada a otro trabajador." }, { status: 403 });
+    if (nextStatus === "COMPLETADO" && ["MANTENIMIENTO", "REPARACION", "DANO"].includes(order.type)) {
+      const evidence = await env.DB.prepare("SELECT category, COUNT(*) AS total FROM documents WHERE work_order_id = ? AND category IN ('TRABAJO_ANTES', 'TRABAJO_DESPUES') GROUP BY category").bind(workOrderId).all<{ category: string; total: number }>();
+      const categories = new Set(evidence.results.filter((item) => item.total > 0).map((item) => item.category));
+      if (!categories.has("TRABAJO_ANTES") || !categories.has("TRABAJO_DESPUES")) return Response.json({ error: "Para cerrar reparaciones, daños o mantenimiento carga evidencia de antes y después." }, { status: 409 });
+    }
+    const actor = user?.name || "Recepción";
+    const assignments = nextStatus === "EN_PROCESO"
+      ? "status = ?, assigned_user_id = COALESCE(assigned_user_id, ?), started_at = ?, started_by = ?"
+      : nextStatus === "COMPLETADO"
+        ? "status = ?, completed_at = ?, completed_by = ?"
+        : "status = ?, cancelled_at = ?, cancelled_by = ?, cancellation_reason = ?";
+    const update = nextStatus === "EN_PROCESO"
+      ? env.DB.prepare("UPDATE work_orders SET " + assignments + " WHERE id = ?").bind(nextStatus, user?.id || null, now, actor, workOrderId)
+      : nextStatus === "COMPLETADO"
+        ? env.DB.prepare("UPDATE work_orders SET " + assignments + " WHERE id = ?").bind(nextStatus, now, actor, workOrderId)
+        : env.DB.prepare("UPDATE work_orders SET " + assignments + " WHERE id = ?").bind(nextStatus, now, actor, String(body.reason).trim(), workOrderId);
+    await env.DB.batch([
+      update,
+      env.DB.prepare("INSERT INTO work_order_history (work_order_id, action, from_status, to_status, detail, performed_by, created_at) VALUES (?, 'ESTADO_CAMBIADO', ?, ?, ?, ?, ?)").bind(workOrderId, order.status, nextStatus, String(body.reason || body.detail || "").trim(), actor, now),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(order.room_id, order.stay_id, order.type, "Tarea " + (nextStatus === "COMPLETADO" ? "completada" : nextStatus === "CANCELADO" ? "cancelada" : "iniciada") + ": " + order.title, String(body.reason || "Actualización de orden de trabajo"), nextStatus, actor, now),
+    ]);
+    if ((nextStatus === "COMPLETADO" || nextStatus === "CANCELADO") && order.blocks_room) {
+      const remaining = await env.DB.prepare("SELECT id FROM work_orders WHERE room_id = ? AND blocks_room = 1 AND status IN ('PENDIENTE', 'EN_PROCESO') LIMIT 1").bind(order.room_id).first();
+      const activeStay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA' LIMIT 1").bind(order.room_id).first();
+      const turnover = await env.DB.prepare("SELECT id FROM room_turnovers WHERE room_id = ? AND status != 'COMPLETADO' LIMIT 1").bind(order.room_id).first();
+      if (!remaining && !activeStay && !turnover) await env.DB.prepare("UPDATE rooms SET status = 'DISPONIBLE' WHERE id = ? AND status = 'MANTENIMIENTO'").bind(order.room_id).run();
+    }
+    return Response.json({ ok: true });
+  }
 
   if (body.action === "floor_create") {
     if (!canConfigure) return Response.json({ error: "Solo administración puede crear pisos." }, { status: 403 });
@@ -482,12 +583,15 @@ export async function POST(request: Request) {
     if (itemStatements.length) await env.DB.batch(itemStatements);
     if (kind === "LIMPIEZA_FINAL" && turnover) {
       const hasIssues = items.some((item) => item.condition !== "BUENO");
+      const blockingTask = await env.DB.prepare("SELECT id, title FROM work_orders WHERE room_id = ? AND blocks_room = 1 AND status IN ('PENDIENTE', 'EN_PROCESO') ORDER BY created_at LIMIT 1").bind(roomId).first<{ id: number; title: string }>();
+      const blocked = hasIssues || Boolean(blockingTask);
+      const closingDetail = blockingTask ? "Trabajo pendiente: " + blockingTask.title : body.notes || (hasIssues ? "Requiere correcciones" : "Limpieza aprobada");
       await env.DB.batch([
-        env.DB.prepare("UPDATE room_turnovers SET status = ?, final_inspection_id = ?, approved_at = ?, approved_by = ? WHERE id = ?").bind(hasIssues ? "OBSERVADO" : "COMPLETADO", inspectionId, hasIssues ? null : now, hasIssues ? null : user?.name || "Recepción", turnover.id),
-        env.DB.prepare("UPDATE rooms SET status = ? WHERE id = ?").bind(hasIssues ? "MANTENIMIENTO" : "DISPONIBLE", roomId),
-        env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'INSPECCION', ?, ?, ?, ?, ?)").bind(roomId, stayId, hasIssues ? "Inspección final observada" : "Habitación habilitada", body.notes || (hasIssues ? "Requiere correcciones" : "Limpieza aprobada"), hasIssues ? "PENDIENTE" : "COMPLETADO", user?.name || "Recepción", now),
+        env.DB.prepare("UPDATE room_turnovers SET status = ?, final_inspection_id = ?, approved_at = ?, approved_by = ? WHERE id = ?").bind(blocked ? "OBSERVADO" : "COMPLETADO", inspectionId, blocked ? null : now, blocked ? null : user?.name || "Recepción", turnover.id),
+        env.DB.prepare("UPDATE rooms SET status = ? WHERE id = ?").bind(blocked ? "MANTENIMIENTO" : "DISPONIBLE", roomId),
+        env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'INSPECCION', ?, ?, ?, ?, ?)").bind(roomId, stayId, blocked ? "Inspección final observada" : "Habitación habilitada", closingDetail, blocked ? "PENDIENTE" : "COMPLETADO", user?.name || "Recepción", now),
       ]);
-      return Response.json({ ok: true, inspectionId, roomStatus: hasIssues ? "MANTENIMIENTO" : "DISPONIBLE" });
+      return Response.json({ ok: true, inspectionId, roomStatus: blocked ? "MANTENIMIENTO" : "DISPONIBLE" });
     }
     await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'INSPECCION', ?, ?, 'COMPLETADO', ?, ?)").bind(roomId, stayId, kind === "ENTREGA" ? "Acta de entrega completada" : "Acta de devolución completada", body.notes || "Sin observaciones generales", user?.name || "Usuario", now).run();
     return Response.json({ ok: true, inspectionId });

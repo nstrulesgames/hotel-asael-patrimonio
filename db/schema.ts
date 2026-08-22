@@ -100,6 +100,7 @@ export const documents = sqliteTable("documents", {
   roomId: integer("room_id").notNull(),
   stayId: integer("stay_id"),
   segmentId: integer("segment_id"),
+  workOrderId: integer("work_order_id"),
   phase: text("phase", { enum: ["GENERAL", "ENTREGA", "DEVOLUCION"] }).notNull().default("GENERAL"),
   category: text("category").notNull(),
   filename: text("filename").notNull(),
@@ -107,7 +108,7 @@ export const documents = sqliteTable("documents", {
   contentType: text("content_type").notNull(),
   uploadedBy: text("uploaded_by").notNull().default("Hotel ASAEL"),
   createdAt: text("created_at").notNull(),
-}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId)]);
+}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId), index("idx_documents_work_order_id").on(table.workOrderId)]);
 
 export const inventoryItems = sqliteTable("inventory_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -153,3 +154,38 @@ export const roomTurnovers = sqliteTable("room_turnovers", {
   approvedBy: text("approved_by"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_turnovers_room_status").on(table.roomId, table.status)]);
+
+export const workOrders = sqliteTable("work_orders", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  roomId: integer("room_id").notNull(),
+  stayId: integer("stay_id"),
+  segmentId: integer("segment_id"),
+  type: text("type", { enum: ["LIMPIEZA", "MANTENIMIENTO", "REPARACION", "MUEBLES", "DANO", "OTRO"] }).notNull(),
+  title: text("title").notNull(),
+  detail: text("detail").notNull().default(""),
+  priority: text("priority", { enum: ["BAJA", "MEDIA", "ALTA", "URGENTE"] }).notNull(),
+  status: text("status", { enum: ["PENDIENTE", "EN_PROCESO", "COMPLETADO", "CANCELADO"] }).notNull(),
+  assignedUserId: integer("assigned_user_id"),
+  dueAt: text("due_at"),
+  blocksRoom: integer("blocks_room", { mode: "boolean" }).notNull().default(false),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+  startedAt: text("started_at"),
+  startedBy: text("started_by"),
+  completedAt: text("completed_at"),
+  completedBy: text("completed_by"),
+  cancelledAt: text("cancelled_at"),
+  cancelledBy: text("cancelled_by"),
+  cancellationReason: text("cancellation_reason"),
+}, (table) => [index("idx_work_orders_room_status").on(table.roomId, table.status), index("idx_work_orders_status_priority").on(table.status, table.priority)]);
+
+export const workOrderHistory = sqliteTable("work_order_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workOrderId: integer("work_order_id").notNull(),
+  action: text("action").notNull(),
+  fromStatus: text("from_status"),
+  toStatus: text("to_status"),
+  detail: text("detail").notNull().default(""),
+  performedBy: text("performed_by").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_work_order_history_order_created").on(table.workOrderId, table.createdAt)]);

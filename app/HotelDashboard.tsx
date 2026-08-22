@@ -10,16 +10,20 @@ type InspectionKind = "ENTREGA" | "DEVOLUCION" | "LIMPIEZA_FINAL";
 type Inspection = { id: number; stay_id: number; room_id: number; segment_id?: number; kind: InspectionKind; notes: string; created_by: string; created_at: string };
 type InspectionItem = { id: number; inspection_id: number; inventory_item_id?: number; name: string; quantity: number; condition: "BUENO" | "OBSERVADO" | "FALTANTE"; notes: string };
 type Worker = { id: number; name: string; email: string; role: string; active: number; created_at: string };
-type HotelDocument = { id: number; room_id: number; stay_id?: number; segment_id?: number; phase: "GENERAL" | "ENTREGA" | "DEVOLUCION"; category: string; filename: string; content_type: string; uploaded_by: string; created_at: string };
+type HotelDocument = { id: number; room_id: number; stay_id?: number; segment_id?: number; work_order_id?: number; phase: "GENERAL" | "ENTREGA" | "DEVOLUCION"; category: string; filename: string; content_type: string; uploaded_by: string; created_at: string };
 type StaySegment = { id: number; stay_id: number; room_id: number; room_number: string; sequence: number; started_at: string; ended_at?: string; start_reason: string; end_reason?: string; created_by: string; ended_by?: string; document_count: number; delivery_count: number; return_count: number; delivery_signed: number; return_signed: number };
 type OperationalAlert = { type: "ACTA_ENTREGA_VENCIDA" | "CIERRE_OPERATIVO"; room_id: number; room_number: string; stay_id: number; created_at: string };
-type Data = { user: { id: number; name: string; email: string; role: string }; floors: Floor[]; rooms: Room[]; events: HotelEvent[]; inventory: InventoryItem[]; inspections: Inspection[]; inspectionItems: InspectionItem[]; users: Worker[]; documents: HotelDocument[]; alerts: OperationalAlert[]; segments: StaySegment[] };
+type WorkOrder = { id: number; room_id: number; room_number: string; stay_id?: number; segment_id?: number; type: string; title: string; detail: string; priority: "BAJA" | "MEDIA" | "ALTA" | "URGENTE"; status: "PENDIENTE" | "EN_PROCESO" | "COMPLETADO" | "CANCELADO"; assigned_user_id?: number; assigned_name?: string; assigned_active?: number; due_at?: string; blocks_room: number; created_by: string; created_at: string; started_at?: string; completed_at?: string; cancelled_at?: string; cancellation_reason?: string; before_count: number; after_count: number };
+type WorkOrderHistory = { id: number; work_order_id: number; action: string; from_status?: string; to_status?: string; detail: string; performed_by: string; created_at: string };
+type Data = { user: { id: number; name: string; email: string; role: string }; floors: Floor[]; rooms: Room[]; events: HotelEvent[]; inventory: InventoryItem[]; inspections: Inspection[]; inspectionItems: InspectionItem[]; users: Worker[]; documents: HotelDocument[]; alerts: OperationalAlert[]; segments: StaySegment[]; workOrders: WorkOrder[]; workOrderHistory: WorkOrderHistory[] };
 type Companion = { fullName: string; ci: string; phone: string; isMinor: boolean };
 
 const labels: Record<string, string> = {
   DISPONIBLE: "Disponible", OCUPADA: "Ocupada", LIMPIEZA: "En limpieza", MANTENIMIENTO: "Mantenimiento", FUERA_SERVICIO: "Fuera de servicio",
   DIA: "Por día", SEMANA: "Por semana", MES: "Por mes", ARRENDAMIENTO: "Arrendamiento",
   PROPIETARIO: "Propietario", ADMINISTRADOR: "Administrador", RECEPCION: "Recepción",
+  PENDIENTE: "Pendiente", EN_PROCESO: "En proceso", COMPLETADO: "Completado", CANCELADO: "Cancelado",
+  BAJA: "Baja", MEDIA: "Media", ALTA: "Alta", URGENTE: "Urgente", REPARACION: "Reparación", DANO: "Daño", MUEBLES: "Muebles",
 };
 
 const statusOrder = ["DISPONIBLE", "OCUPADA", "LIMPIEZA", "MANTENIMIENTO", "FUERA_SERVICIO"];
@@ -34,7 +38,8 @@ export default function HotelDashboard() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [companions, setCompanions] = useState<Companion[]>([]);
-  const [view, setView] = useState<"habitaciones" | "actividad" | "configuracion">("habitaciones");
+  const [view, setView] = useState<"habitaciones" | "tareas" | "actividad" | "configuracion">("habitaciones");
+  const [taskRoomId, setTaskRoomId] = useState<number | undefined>();
 
   const load = useCallback(async () => {
     const response = await fetch("/api/hotel", { cache: "no-store" });
@@ -77,6 +82,7 @@ export default function HotelDashboard() {
         <div className="brand"><span className="brand-mark">A</span><div><b>ASAEL</b><small>Gestión hotelera</small></div></div>
         <nav>
           <button className={view === "habitaciones" ? "active" : ""} onClick={() => setView("habitaciones")}><span>▦</span> Habitaciones</button>
+          <button className={view === "tareas" ? "active" : ""} onClick={() => setView("tareas")}><span>✓</span> Tareas</button>
           <button className={view === "actividad" ? "active" : ""} onClick={() => setView("actividad")}><span>◷</span> Actividad</button>
           <button className={view === "configuracion" ? "active" : ""} onClick={() => setView("configuracion")}><span>⚙</span> Configuración</button>
         </nav>
@@ -86,8 +92,8 @@ export default function HotelDashboard() {
 
       <section className="content">
         <header className="topbar">
-          <div><p className="eyebrow">Hotel ASAEL · {new Intl.DateTimeFormat("es-BO", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p><h1>{view === "habitaciones" ? "Estado del hotel" : view === "actividad" ? "Bitácora operativa" : "Configuración del hotel"}</h1></div>
-          <button className="primary" onClick={() => { const room = data.rooms.find((item) => item.status === "DISPONIBLE"); if (room) { setSelected(room); setCompanions([]); setModal("checkin"); } else setNotice("No hay habitaciones disponibles."); }}>＋ Registrar ingreso</button>
+          <div><p className="eyebrow">Hotel ASAEL · {new Intl.DateTimeFormat("es-BO", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p><h1>{view === "habitaciones" ? "Estado del hotel" : view === "tareas" ? "Tareas operativas" : view === "actividad" ? "Bitácora operativa" : "Configuración del hotel"}</h1></div>
+          <button className="primary" onClick={() => { if (view === "tareas") { document.getElementById("new-work-order")?.scrollIntoView({ behavior: "smooth" }); return; } const room = data.rooms.find((item) => item.status === "DISPONIBLE"); if (room) { setSelected(room); setCompanions([]); setModal("checkin"); } else setNotice("No hay habitaciones disponibles."); }}>{view === "tareas" ? "＋ Nueva tarea" : "＋ Registrar ingreso"}</button>
         </header>
 
         {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
@@ -113,11 +119,13 @@ export default function HotelDashboard() {
 
         {view === "actividad" && <section className="panel activity-page"><div className="panel-head"><div><h2>Bitácora de habitaciones</h2><p>Ingresos, salidas, limpieza, mantenimiento y cambios de habitación.</p></div></div><EventList events={data.events} /></section>}
 
+        {view === "tareas" && <WorkOrdersView data={data} busy={busy} preferredRoomId={taskRoomId} onPreferredRoomUsed={() => setTaskRoomId(undefined)} onReload={load} onAction={action} onNotice={setNotice} />}
+
         {view === "configuracion" && <ConfigurationView data={data} busy={busy} onAction={action} />}
       </section>
 
       {modal && selected && <Modal onClose={() => setModal(null)} wide={modal === "room" || modal === "print"}>
-        {modal === "room" && <RoomDetail room={selected} data={data} onReload={load} onAction={(next) => setModal(next)} onInspection={(kind) => { setInspectionKind(kind); setModal("inspection"); }} onPrint={(kind) => { setInspectionKind(kind); setModal("print"); }} onCheckout={() => action({ action: "checkout", roomId: selected.id })} onWorkflow={(workflowAction) => action({ action: workflowAction, roomId: selected.id, turnoverId: selected.turnover_id })} busy={busy} />}
+        {modal === "room" && <RoomDetail room={selected} data={data} onReload={load} onAction={(next) => setModal(next)} onOpenTasks={() => { setTaskRoomId(selected.id); setView("tareas"); setModal(null); }} onInspection={(kind) => { setInspectionKind(kind); setModal("inspection"); }} onPrint={(kind) => { setInspectionKind(kind); setModal("print"); }} onCheckout={() => action({ action: "checkout", roomId: selected.id })} onWorkflow={(workflowAction) => action({ action: workflowAction, roomId: selected.id, turnoverId: selected.turnover_id })} busy={busy} />}
         {modal === "checkin" && <CheckIn room={selected} userRole={data.user.role} companions={companions} setCompanions={setCompanions} busy={busy} onSubmit={async (payload) => { const result = await action({ action: "checkin", roomId: selected.id, ...payload }); if (result) setCompanions([]); }} />}
         {modal === "event" && <EventForm room={selected} busy={busy} onSubmit={(payload) => action({ action: "event", roomId: selected.id, stayId: selected.stay_id, ...payload })} />}
         {modal === "transfer" && <Transfer room={selected} rooms={data.rooms} userRole={data.user.role} busy={busy} onSubmit={(payload) => action({ action: "transfer", roomId: selected.id, ...payload })} />}
@@ -128,6 +136,79 @@ export default function HotelDashboard() {
       </Modal>}
     </main>
   );
+}
+
+function WorkOrdersView({ data, busy, preferredRoomId, onPreferredRoomUsed, onReload, onAction, onNotice }: { data: Data; busy: boolean; preferredRoomId?: number; onPreferredRoomUsed: () => void; onReload: () => Promise<void>; onAction: (payload: Record<string, unknown>) => Promise<unknown>; onNotice: (message: string) => void }) {
+  const [roomId, setRoomId] = useState(String(preferredRoomId || ""));
+  const [filter, setFilter] = useState("ABIERTAS");
+  useEffect(() => { if (preferredRoomId) { setRoomId(String(preferredRoomId)); onPreferredRoomUsed(); } }, [preferredRoomId, onPreferredRoomUsed]);
+  const activeUsers = data.users.filter((worker) => Boolean(worker.active));
+  const openCount = data.workOrders.filter((order) => order.status === "PENDIENTE" || order.status === "EN_PROCESO").length;
+  const visible = data.workOrders.filter((order) => filter === "TODAS" || (filter === "ABIERTAS" ? order.status === "PENDIENTE" || order.status === "EN_PROCESO" : order.status === filter));
+  const create = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const result = await onAction({ action: "work_order_create", roomId: values.get("roomId"), type: values.get("type"), title: values.get("title"), detail: values.get("detail"), priority: values.get("priority"), assignedUserId: values.get("assignedUserId"), dueAt: values.get("dueAt") || null, blocksRoom: values.get("blocksRoom") === "on" });
+    if (result) { form.reset(); setRoomId(""); }
+  };
+  return <section className="work-orders-page">
+    <article className="panel work-order-create" id="new-work-order">
+      <div className="panel-head"><div><h2>Nueva tarea operativa</h2><p>Registra limpieza extraordinaria, reparación, daño, mantenimiento o movimiento de muebles.</p></div><strong className="open-counter">{openCount} abiertas</strong></div>
+      <form onSubmit={create} className="work-order-form">
+        <label>Habitación<select name="roomId" required value={roomId} onChange={(event) => setRoomId(event.target.value)}><option value="">Seleccionar</option>{data.rooms.filter((room) => Boolean(room.active)).map((room) => <option key={room.id} value={room.id}>Habitación {room.number} · {labels[room.status]}</option>)}</select></label>
+        <label>Tipo<select name="type"><option value="MANTENIMIENTO">Mantenimiento</option><option value="REPARACION">Reparación</option><option value="DANO">Daño</option><option value="LIMPIEZA">Limpieza extraordinaria</option><option value="MUEBLES">Movimiento de muebles</option><option value="OTRO">Otro</option></select></label>
+        <label>Prioridad<select name="priority"><option value="MEDIA">Media</option><option value="BAJA">Baja</option><option value="ALTA">Alta</option><option value="URGENTE">Urgente</option></select></label>
+        <label>Responsable<select name="assignedUserId"><option value="">Sin asignar</option>{activeUsers.map((worker) => <option key={worker.id} value={worker.id}>{worker.name}</option>)}</select></label>
+        <label className="span-2">Trabajo a realizar<input name="title" required placeholder="Ej. Reparar fuga en la ducha" /></label>
+        <label>Fecha límite<input name="dueAt" type="datetime-local" /></label>
+        <label className="block-check"><input name="blocksRoom" type="checkbox" /> Bloquea el uso de la habitación</label>
+        <label className="span-2">Detalle<textarea name="detail" placeholder="Describe el problema, ubicación y resultado esperado…" /></label>
+        <button className="primary span-2" disabled={busy}>Crear tarea</button>
+      </form>
+    </article>
+    <div className="task-filter"><button className={filter === "ABIERTAS" ? "active" : ""} onClick={() => setFilter("ABIERTAS")}>Abiertas</button><button className={filter === "PENDIENTE" ? "active" : ""} onClick={() => setFilter("PENDIENTE")}>Pendientes</button><button className={filter === "EN_PROCESO" ? "active" : ""} onClick={() => setFilter("EN_PROCESO")}>En proceso</button><button className={filter === "COMPLETADO" ? "active" : ""} onClick={() => setFilter("COMPLETADO")}>Completadas</button><button className={filter === "TODAS" ? "active" : ""} onClick={() => setFilter("TODAS")}>Todas</button></div>
+    <div className="work-order-list">{visible.length ? visible.map((order) => <WorkOrderCard key={order.id} order={order} data={data} busy={busy} onAction={onAction} onReload={onReload} onNotice={onNotice} />) : <article className="panel empty-tasks"><strong>No hay tareas en esta vista.</strong><p>Las nuevas órdenes aparecerán aquí con su responsable y seguimiento.</p></article>}</div>
+  </section>;
+}
+
+function WorkOrderCard({ order, data, busy, onAction, onReload, onNotice }: { order: WorkOrder; data: Data; busy: boolean; onAction: (payload: Record<string, unknown>) => Promise<unknown>; onReload: () => Promise<void>; onNotice: (message: string) => void }) {
+  const canConfigure = data.user.role === "PROPIETARIO" || data.user.role === "ADMINISTRADOR";
+  const isOpen = order.status === "PENDIENTE" || order.status === "EN_PROCESO";
+  const history = data.workOrderHistory.filter((item) => item.work_order_id === order.id);
+  const documents = data.documents.filter((item) => item.work_order_id === order.id);
+  const update = (status: string) => {
+    const reason = status === "CANCELADO" ? window.prompt("Motivo de cancelación:") : "";
+    if (status === "CANCELADO" && !reason) return;
+    onAction({ action: "work_order_update", workOrderId: order.id, status, reason });
+  };
+  return <article className={"panel work-order-card priority-" + order.priority.toLowerCase()}>
+    <header><div><span className="task-room">Habitación {order.room_number}</span><span className={"task-priority " + order.priority.toLowerCase()}>{labels[order.priority]}</span>{Boolean(order.blocks_room) && <span className="blocking-badge">Bloqueante</span>}</div><span className={"task-status status-" + order.status.toLowerCase()}>{labels[order.status]}</span></header>
+    <div className="task-content"><div className="task-main"><small>{labels[order.type] || order.type}</small><h3>{order.title}</h3><p>{order.detail || "Sin detalle adicional."}</p><div className="task-meta"><span>Responsable: <b>{order.assigned_name || "Sin asignar"}</b>{order.assigned_name && !order.assigned_active ? " · acceso inactivo" : ""}</span><span>Creada por {order.created_by}</span>{order.due_at && <span className={isOpen && new Date(order.due_at) < new Date() ? "overdue" : ""}>Límite: {new Intl.DateTimeFormat("es-BO", { dateStyle: "medium", timeStyle: "short" }).format(new Date(order.due_at))}</span>}</div></div>
+      <aside className="task-controls">{isOpen && canConfigure && <select aria-label="Reasignar responsable" value={order.assigned_user_id || ""} onChange={(event) => onAction({ action: "work_order_assign", workOrderId: order.id, assignedUserId: event.target.value })}><option value="">Sin asignar</option>{data.users.filter((worker) => Boolean(worker.active)).map((worker) => <option key={worker.id} value={worker.id}>{worker.name}</option>)}</select>}{order.status === "PENDIENTE" && <button className="primary" disabled={busy} onClick={() => update("EN_PROCESO")}>Iniciar tarea</button>}{order.status === "EN_PROCESO" && <button className="primary" disabled={busy} onClick={() => update("COMPLETADO")}>Marcar completada</button>}{isOpen && canConfigure && <button className="danger-light" disabled={busy} onClick={() => update("CANCELADO")}>Cancelar</button>}</aside>
+    </div>
+    <TaskEvidence order={order} documents={documents} onReload={onReload} onNotice={onNotice} />
+    <details className="task-history"><summary>Historial ({history.length})</summary>{history.map((item) => <div key={item.id}><i /><span><b>{item.performed_by}</b> · {item.to_status ? labels[item.to_status] || item.to_status : item.action}<small>{new Intl.DateTimeFormat("es-BO", { dateStyle: "short", timeStyle: "short" }).format(new Date(item.created_at))}{item.detail ? " · " + item.detail : ""}</small></span></div>)}</details>
+  </article>;
+}
+
+function TaskEvidence({ order, documents, onReload, onNotice }: { order: WorkOrder; documents: HotelDocument[]; onReload: () => Promise<void>; onNotice: (message: string) => void }) {
+  const [category, setCategory] = useState("TRABAJO_ANTES");
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const upload = async () => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.set("file", file); form.set("roomId", String(order.room_id)); form.set("workOrderId", String(order.id)); form.set("category", category); form.set("phase", "GENERAL");
+      const response = await fetch("/api/documents", { method: "POST", body: form });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      setFile(null); await onReload(); onNotice("Evidencia de la tarea guardada.");
+    } catch (error) { onNotice(error instanceof Error ? error.message : "No se pudo guardar la evidencia."); } finally { setUploading(false); }
+  };
+  return <section className="task-evidence"><div className="evidence-heading"><div><b>Evidencias antes y después</b><small>{order.before_count} antes · {order.after_count} después</small></div></div><div className="upload-row"><select value={category} onChange={(event) => setCategory(event.target.value)}><option value="TRABAJO_ANTES">Antes del trabajo</option><option value="TRABAJO_DESPUES">Después del trabajo</option></select><label className="file-picker">{file ? file.name : "Tomar foto o elegir archivo"}<input type="file" accept="image/*,.pdf" capture="environment" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button disabled={!file || uploading} onClick={upload}>{uploading ? "Subiendo…" : "Guardar"}</button></div>{documents.length > 0 && <div className="task-documents">{documents.map((document) => <a key={document.id} href={"/api/documents?id=" + document.id} target="_blank" rel="noreferrer">{document.category === "TRABAJO_ANTES" ? "Antes" : "Después"} · {document.filename}</a>)}</div>}</section>;
 }
 
 function ConfigurationView({ data, busy, onAction }: { data: Data; busy: boolean; onAction: (payload: Record<string, unknown>) => Promise<unknown> }) {
@@ -207,7 +288,7 @@ function Modal({ children, onClose, wide = false }: { children: React.ReactNode;
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className={`modal ${wide ? "modal-wide" : ""}`}><button className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>{children}</section></div>;
 }
 
-function RoomDetail({ room, data, onReload, onAction, onInspection, onPrint, onCheckout, onWorkflow, busy }: { room: Room; data: Data; onReload: () => Promise<void>; onAction: (modal: "checkin" | "event" | "transfer" | "edit" | "inventory") => void; onInspection: (kind: InspectionKind) => void; onPrint: (kind: "ENTREGA" | "DEVOLUCION") => void; onCheckout: () => void; onWorkflow: (action: "cleaning_start" | "cleaning_complete" | "cleaning_reopen") => void; busy: boolean }) {
+function RoomDetail({ room, data, onReload, onAction, onOpenTasks, onInspection, onPrint, onCheckout, onWorkflow, busy }: { room: Room; data: Data; onReload: () => Promise<void>; onAction: (modal: "checkin" | "event" | "transfer" | "edit" | "inventory") => void; onOpenTasks: () => void; onInspection: (kind: InspectionKind) => void; onPrint: (kind: "ENTREGA" | "DEVOLUCION") => void; onCheckout: () => void; onWorkflow: (action: "cleaning_start" | "cleaning_complete" | "cleaning_reopen") => void; busy: boolean }) {
   const currentSegment = data.segments.find((item) => item.id === room.current_segment_id);
   const stayInspections = data.inspections.filter((item) => item.segment_id === room.current_segment_id);
   const stayDocuments = data.documents.filter((item) => item.segment_id === room.current_segment_id);
@@ -221,7 +302,7 @@ function RoomDetail({ room, data, onReload, onAction, onInspection, onPrint, onC
       {room.stay_id && <section className="info-box workflow-card"><h3>{room.status === "OCUPADA" ? "Progreso documental" : "Cierre operativo"}</h3><div className="workflow-steps"><span className={deliveryComplete ? "done" : "current"}><i>{deliveryComplete ? "✓" : "1"}</i> Acta de entrega</span><span className={deliverySigned ? "done" : deliveryComplete ? "current" : "waiting"}><i>{deliverySigned ? "✓" : "2"}</i> Entrega firmada</span><span className={returnComplete ? "done" : deliverySigned ? "current" : "waiting"}><i>{returnComplete ? "✓" : "3"}</i> Devolución</span><span className={returnSigned ? "done" : returnComplete ? "current" : "waiting"}><i>{returnSigned ? "✓" : "4"}</i> Devolución firmada</span>{room.turnover_id && <span className={room.turnover_status === "COMPLETADO" ? "done" : "current"}><i>5</i> Limpieza e inspección</span>}</div>{room.status === "OCUPADA" && !deliverySigned && currentSegment && Date.now() - new Date(currentSegment.started_at).getTime() > 86_400_000 && <p className="workflow-warning">El plazo de 24 horas para cargar el acta de entrega firmada está vencido.</p>}{room.turnover_status && <p className="workflow-note">{room.turnover_status === "PENDIENTE" ? "Limpieza pendiente de inicio." : room.turnover_status === "EN_LIMPIEZA" ? `Limpieza iniciada por ${room.cleaning_started_by || "recepción"}.` : room.turnover_status === "PENDIENTE_INSPECCION" ? "Limpieza terminada; falta la inspección final." : room.turnover_status === "OBSERVADO" ? "La inspección encontró observaciones que deben corregirse." : "Cierre completado."}</p>}</section>}
       {room.stay_id && <SegmentTimeline segments={data.segments.filter((segment) => segment.stay_id === room.stay_id)} currentSegmentId={room.current_segment_id} />}
       <EvidencePanel room={room} documents={data.documents} inspections={data.inspections} inventory={data.inventory.filter((item) => item.room_id === room.id)} onReload={onReload} /></div>
-      <aside className="action-stack"><h3>Acciones</h3>{room.status === "DISPONIBLE" && <button className="primary" onClick={() => onAction("checkin")}>Registrar ingreso</button>}{room.status === "OCUPADA" && <>{!deliveryComplete && <button className="primary" onClick={() => onInspection("ENTREGA")}>Completar acta de entrega</button>}{deliveryComplete && <button onClick={() => onPrint("ENTREGA")}>Imprimir acta de entrega</button>}{deliverySigned && !returnComplete && <button onClick={() => onInspection("DEVOLUCION")}>Completar acta de devolución</button>}{returnComplete && <button onClick={() => onPrint("DEVOLUCION")}>Imprimir acta de devolución</button>}<button disabled={!returnComplete || !returnSigned} onClick={() => onAction("transfer")}>Cambiar habitación</button><button className="danger-light" disabled={busy || !canCheckout} title={!canCheckout ? "Completa y carga ambas actas firmadas" : undefined} onClick={onCheckout}>Registrar salida</button></>}{room.status === "LIMPIEZA" && room.turnover_status === "PENDIENTE" && <button className="primary" disabled={busy} onClick={() => onWorkflow("cleaning_start")}>Iniciar limpieza</button>}{room.status === "LIMPIEZA" && room.turnover_status === "EN_LIMPIEZA" && <button className="primary" disabled={busy} onClick={() => onWorkflow("cleaning_complete")}>Finalizar limpieza</button>}{room.status === "LIMPIEZA" && room.turnover_status === "PENDIENTE_INSPECCION" && <button className="primary" onClick={() => onInspection("LIMPIEZA_FINAL")}>Realizar inspección final</button>}{room.status === "MANTENIMIENTO" && room.turnover_status === "OBSERVADO" && <button className="primary" disabled={busy} onClick={() => onWorkflow("cleaning_reopen")}>Enviar nuevamente a limpieza</button>}<button onClick={() => onAction("event")}>Añadir evento</button>{data.user.role !== "RECEPCION" && <><button onClick={() => onAction("inventory")}>Editar inventario</button><button onClick={() => onAction("edit")}>Editar habitación</button></>}</aside></div></>;
+      <aside className="action-stack"><h3>Acciones</h3>{room.status === "DISPONIBLE" && <button className="primary" onClick={() => onAction("checkin")}>Registrar ingreso</button>}{room.status === "OCUPADA" && <>{!deliveryComplete && <button className="primary" onClick={() => onInspection("ENTREGA")}>Completar acta de entrega</button>}{deliveryComplete && <button onClick={() => onPrint("ENTREGA")}>Imprimir acta de entrega</button>}{deliverySigned && !returnComplete && <button onClick={() => onInspection("DEVOLUCION")}>Completar acta de devolución</button>}{returnComplete && <button onClick={() => onPrint("DEVOLUCION")}>Imprimir acta de devolución</button>}<button disabled={!returnComplete || !returnSigned} onClick={() => onAction("transfer")}>Cambiar habitación</button><button className="danger-light" disabled={busy || !canCheckout} title={!canCheckout ? "Completa y carga ambas actas firmadas" : undefined} onClick={onCheckout}>Registrar salida</button></>}{room.status === "LIMPIEZA" && room.turnover_status === "PENDIENTE" && <button className="primary" disabled={busy} onClick={() => onWorkflow("cleaning_start")}>Iniciar limpieza</button>}{room.status === "LIMPIEZA" && room.turnover_status === "EN_LIMPIEZA" && <button className="primary" disabled={busy} onClick={() => onWorkflow("cleaning_complete")}>Finalizar limpieza</button>}{room.status === "LIMPIEZA" && room.turnover_status === "PENDIENTE_INSPECCION" && <button className="primary" onClick={() => onInspection("LIMPIEZA_FINAL")}>Realizar inspección final</button>}{room.status === "MANTENIMIENTO" && room.turnover_status === "OBSERVADO" && <button className="primary" disabled={busy} onClick={() => onWorkflow("cleaning_reopen")}>Enviar nuevamente a limpieza</button>}<button className="task-action" onClick={onOpenTasks}>Crear o ver tareas</button><button onClick={() => onAction("event")}>Añadir evento</button>{data.user.role !== "RECEPCION" && <><button onClick={() => onAction("inventory")}>Editar inventario</button><button onClick={() => onAction("edit")}>Editar habitación</button></>}</aside></div></>;
 }
 
 function SegmentTimeline({ segments, currentSegmentId }: { segments: StaySegment[]; currentSegmentId?: number }) {
