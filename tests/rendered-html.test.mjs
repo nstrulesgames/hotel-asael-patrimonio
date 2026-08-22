@@ -89,3 +89,37 @@ test("unifica la auditoría y la limita a administración", async () => {
   assert.match(dashboard, /data\.user\.role !== "RECEPCION"/);
   assert.match(migration, /CREATE TABLE `audit_logs`/);
 });
+
+test("construye un expediente integral por huésped", async () => {
+  const [route, dashboard] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+  ]);
+  assert.match(route, /guestProfiles/);
+  assert.match(route, /guestStayHistory/);
+  assert.match(route, /COUNT\(DISTINCT sg\.stay_id\)/);
+  assert.match(route, /document_count/);
+  assert.match(dashboard, /function GuestsView/);
+  assert.match(dashboard, /function GuestProfileCard/);
+  assert.match(dashboard, /Historial de estadías/);
+  assert.match(dashboard, /Documentos del expediente/);
+});
+
+test("traspasa titularidad con aprobación y conserva el historial", async () => {
+  const [schema, route, dashboard, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0011_robust_madame_web.sql"), "utf8"),
+  ]);
+  assert.match(schema, /primaryGuestTransfers/);
+  assert.match(migration, /CREATE TABLE `primary_guest_transfers`/);
+  assert.match(route, /primary_transfer_submit/);
+  assert.match(route, /primary_transfer_review/);
+  assert.match(route, /El nuevo titular debe ser un acompañante activo/);
+  assert.match(route, /UPDATE stays SET primary_guest_id/);
+  assert.match(route, /UPDATE stay_guests SET is_primary = CASE/);
+  assert.doesNotMatch(route, /DELETE FROM primary_guest_transfers/);
+  assert.match(dashboard, /function PrimaryTransferForm/);
+  assert.match(dashboard, /Aprobar traspaso/);
+});

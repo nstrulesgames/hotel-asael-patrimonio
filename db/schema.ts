@@ -88,6 +88,24 @@ export const stayGuests = sqliteTable("stay_guests", {
   removalReason: text("removal_reason"),
 }, (table) => [index("idx_stay_guests_stay_active").on(table.stayId, table.leftAt)]);
 
+export const primaryGuestTransfers = sqliteTable("primary_guest_transfers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  previousGuestId: integer("previous_guest_id").notNull(),
+  proposedGuestId: integer("proposed_guest_id").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["PENDIENTE", "APROBADA", "RECHAZADA"] }).notNull(),
+  requestedByUserId: integer("requested_by_user_id").notNull(),
+  requestedByName: text("requested_by_name").notNull(),
+  requestedAt: text("requested_at").notNull(),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+  appliedAt: text("applied_at"),
+}, (table) => [index("idx_primary_transfers_status_requested").on(table.status, table.requestedAt), index("idx_primary_transfers_stay_requested").on(table.stayId, table.requestedAt)]);
+
 export const roomEvents = sqliteTable("room_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),
