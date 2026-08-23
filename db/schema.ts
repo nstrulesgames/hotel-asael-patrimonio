@@ -106,6 +106,29 @@ export const primaryGuestTransfers = sqliteTable("primary_guest_transfers", {
   appliedAt: text("applied_at"),
 }, (table) => [index("idx_primary_transfers_status_requested").on(table.status, table.requestedAt), index("idx_primary_transfers_stay_requested").on(table.stayId, table.requestedAt)]);
 
+export const exitAssessments = sqliteTable("exit_assessments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  segmentId: integer("segment_id").notNull(),
+  deliveryInspectionId: integer("delivery_inspection_id").notNull(),
+  returnInspectionId: integer("return_inspection_id").notNull(),
+  workOrderId: integer("work_order_id"),
+  issueCount: integer("issue_count").notNull().default(0),
+  missingCount: integer("missing_count").notNull().default(0),
+  observedCount: integer("observed_count").notNull().default(0),
+  discrepancies: text("discrepancies").notNull().default("[]"),
+  notes: text("notes").notNull().default(""),
+  status: text("status", { enum: ["SIN_OBSERVACIONES", "PENDIENTE", "APROBADA", "RECHAZADA"] }).notNull(),
+  submittedByUserId: integer("submitted_by_user_id").notNull(),
+  submittedByName: text("submitted_by_name").notNull(),
+  submittedAt: text("submitted_at").notNull(),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+}, (table) => [index("idx_exit_assessments_status_submitted").on(table.status, table.submittedAt), index("idx_exit_assessments_segment_submitted").on(table.segmentId, table.submittedAt)]);
+
 export const roomEvents = sqliteTable("room_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),

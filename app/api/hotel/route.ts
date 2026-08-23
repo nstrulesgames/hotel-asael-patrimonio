@@ -10,6 +10,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS stay_room_segments (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, sequence INTEGER NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, start_reason TEXT NOT NULL, end_reason TEXT, created_by TEXT NOT NULL, ended_by TEXT)`,
   `CREATE TABLE IF NOT EXISTS stay_guests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, guest_id INTEGER NOT NULL, is_primary INTEGER NOT NULL DEFAULT 0, joined_at TEXT, left_at TEXT, added_by TEXT, removed_by TEXT, removal_reason TEXT)`,
   `CREATE TABLE IF NOT EXISTS primary_guest_transfers (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, previous_guest_id INTEGER NOT NULL, proposed_guest_id INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL, requested_by_user_id INTEGER NOT NULL, requested_by_name TEXT NOT NULL, requested_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT, applied_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS exit_assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, delivery_inspection_id INTEGER NOT NULL, return_inspection_id INTEGER NOT NULL, work_order_id INTEGER, issue_count INTEGER NOT NULL DEFAULT 0, missing_count INTEGER NOT NULL DEFAULT 0, observed_count INTEGER NOT NULL DEFAULT 0, discrepancies TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, submitted_by_user_id INTEGER NOT NULL, submitted_by_name TEXT NOT NULL, submitted_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT)`,
   `CREATE TABLE IF NOT EXISTS room_events (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, phase TEXT NOT NULL DEFAULT 'GENERAL', category TEXT NOT NULL, filename TEXT NOT NULL, object_key TEXT NOT NULL, content_type TEXT NOT NULL, uploaded_by TEXT NOT NULL DEFAULT 'Hotel ASAEL', created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, notes TEXT NOT NULL DEFAULT '')`,
@@ -31,6 +32,8 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_guests_ci ON guests(ci)`,
   `CREATE INDEX IF NOT EXISTS idx_primary_transfers_status_requested ON primary_guest_transfers(status, requested_at)`,
   `CREATE INDEX IF NOT EXISTS idx_primary_transfers_stay_requested ON primary_guest_transfers(stay_id, requested_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_exit_assessments_status_submitted ON exit_assessments(status, submitted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_exit_assessments_segment_submitted ON exit_assessments(segment_id, submitted_at)`,
   `CREATE INDEX IF NOT EXISTS idx_turnovers_room_status ON room_turnovers(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_stay_segments_stay_sequence ON stay_room_segments(stay_id, sequence)`,
   `CREATE INDEX IF NOT EXISTS idx_work_orders_room_status ON work_orders(room_id, status)`,
@@ -190,7 +193,7 @@ export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, auditFeed] = await Promise.all([
+  const [floors, rooms, events, inventory, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, auditFeed] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id AND sg.left_at IS NULL) AS guest_count,
@@ -258,9 +261,12 @@ export async function GET(request: Request) {
     env.DB.prepare(`SELECT t.*, r.number AS room_number, previous.full_name AS previous_guest_name, proposed.full_name AS proposed_guest_name
       FROM primary_guest_transfers t JOIN rooms r ON r.id = t.room_id JOIN guests previous ON previous.id = t.previous_guest_id JOIN guests proposed ON proposed.id = t.proposed_guest_id
       WHERE ? != 'RECEPCION' OR t.requested_by_user_id = ? ORDER BY t.requested_at DESC`).bind(user?.role || "RECEPCION", user?.id || 0).all(),
+    env.DB.prepare(`SELECT a.*, r.number AS room_number, g.full_name AS guest_name, w.title AS work_order_title, w.status AS work_order_status
+      FROM exit_assessments a JOIN rooms r ON r.id = a.room_id JOIN stays s ON s.id = a.stay_id JOIN guests g ON g.id = s.primary_guest_id LEFT JOIN work_orders w ON w.id = a.work_order_id
+      ORDER BY a.submitted_at DESC`).all(),
     loadAuditFeed(user?.role || "RECEPCION"),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, auditFeed: auditFeed.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, auditFeed: auditFeed.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -312,6 +318,33 @@ async function applyPrimaryGuestTransfer(stayId: number, roomId: number, previou
   ]);
 }
 
+type ComparedInspectionItem = { inventory_item_id: number | null; name: string; quantity: number; condition: string; notes: string };
+
+async function compareDeliveryAndReturn(deliveryInspectionId: number, returnInspectionId: number) {
+  const [delivery, returned] = await Promise.all([
+    env.DB.prepare("SELECT inventory_item_id, name, quantity, condition, notes FROM inspection_items WHERE inspection_id = ?").bind(deliveryInspectionId).all<ComparedInspectionItem>(),
+    env.DB.prepare("SELECT inventory_item_id, name, quantity, condition, notes FROM inspection_items WHERE inspection_id = ?").bind(returnInspectionId).all<ComparedInspectionItem>(),
+  ]);
+  const key = (item: ComparedInspectionItem) => item.inventory_item_id ? "id:" + item.inventory_item_id : "name:" + item.name.trim().toLowerCase();
+  const returnedByKey = new Map(returned.results.map((item) => [key(item), item]));
+  const severity: Record<string, number> = { BUENO: 0, OBSERVADO: 1, FALTANTE: 2 };
+  const discrepancies = delivery.results.flatMap((delivered) => {
+    const returnedItem = returnedByKey.get(key(delivered));
+    const returnedCondition = returnedItem?.condition || "FALTANTE";
+    const returnedQuantity = returnedItem?.quantity || 0;
+    const worsened = (severity[returnedCondition] ?? 2) > (severity[delivered.condition] ?? 0);
+    const quantityMissing = returnedQuantity < delivered.quantity;
+    if (!worsened && !quantityMissing) return [];
+    return [{ name: delivered.name, deliveredQuantity: delivered.quantity, returnedQuantity, deliveredCondition: delivered.condition, returnedCondition, notes: returnedItem?.notes || "Sin observación registrada" }];
+  });
+  return {
+    discrepancies,
+    issueCount: discrepancies.length,
+    missingCount: discrepancies.filter((item) => item.returnedCondition === "FALTANTE" || item.returnedQuantity < item.deliveredQuantity).length,
+    observedCount: discrepancies.filter((item) => item.returnedCondition === "OBSERVADO").length,
+  };
+}
+
 export async function POST(request: Request) {
   await ensureDatabase();
   let user;
@@ -320,6 +353,68 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   const roomId = Number(body.roomId);
   const canConfigure = user?.role === "PROPIETARIO" || user?.role === "ADMINISTRADOR";
+
+  if (body.action === "exit_assessment_submit") {
+    const stay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number }>();
+    if (!stay) return Response.json({ error: "No existe una estadía activa." }, { status: 409 });
+    const segment = await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number }>();
+    if (!segment) return Response.json({ error: "No existe un tramo activo para revisar." }, { status: 409 });
+    const [deliveryInspection, returnInspection, deliverySigned, returnSigned] = await Promise.all([
+      env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'ENTREGA' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first<{ id: number }>(),
+      env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first<{ id: number }>(),
+      env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_ENTREGA_FIRMADA' LIMIT 1").bind(segment.id).first(),
+      env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_DEVOLUCION_FIRMADA' LIMIT 1").bind(segment.id).first(),
+    ]);
+    if (!deliveryInspection || !returnInspection || !deliverySigned || !returnSigned) return Response.json({ error: "Completa ambas actas y carga sus respaldos firmados antes de revisar la salida." }, { status: 409 });
+    const existing = await env.DB.prepare("SELECT id FROM exit_assessments WHERE segment_id = ? AND return_inspection_id = ? LIMIT 1").bind(segment.id, returnInspection.id).first();
+    if (existing) return Response.json({ error: "Esta devolución ya fue revisada." }, { status: 409 });
+    const comparison = await compareDeliveryAndReturn(deliveryInspection.id, returnInspection.id);
+    const status = comparison.issueCount ? "PENDIENTE" : "SIN_OBSERVACIONES";
+    let workOrderId: number | null = null;
+    if (comparison.issueCount) {
+      const summary = comparison.discrepancies.map((item) => `${item.name}: ${item.returnedCondition.toLowerCase()}`).join(" · ");
+      const orderResult = await env.DB.prepare("INSERT INTO work_orders (room_id, stay_id, segment_id, type, title, detail, priority, status, assigned_user_id, due_at, blocks_room, created_by, created_at) VALUES (?, ?, ?, 'DANO', 'Resolver observaciones de devolución', ?, 'ALTA', 'PENDIENTE', NULL, NULL, 1, ?, ?)").bind(roomId, stay.id, segment.id, summary, user?.name || "Recepción", now).run();
+      workOrderId = Number(orderResult.meta.last_row_id);
+      await env.DB.prepare("INSERT INTO work_order_history (work_order_id, action, from_status, to_status, detail, performed_by, created_at) VALUES (?, 'CREADA_DESDE_SALIDA', NULL, 'PENDIENTE', ?, ?, ?)").bind(workOrderId, summary, user?.name || "Recepción", now).run();
+    }
+    const result = await env.DB.prepare("INSERT INTO exit_assessments (stay_id, room_id, segment_id, delivery_inspection_id, return_inspection_id, work_order_id, issue_count, missing_count, observed_count, discrepancies, notes, status, submitted_by_user_id, submitted_by_name, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(stay.id, roomId, segment.id, deliveryInspection.id, returnInspection.id, workOrderId, comparison.issueCount, comparison.missingCount, comparison.observedCount, JSON.stringify(comparison.discrepancies), String(body.notes || "").trim(), status, user?.id || 0, user?.name || "Recepción", now).run();
+    const assessmentId = Number(result.meta.last_row_id);
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', ?, ?, ?, ?, ?)").bind(roomId, stay.id, comparison.issueCount ? "Revisión de salida observada" : "Revisión de salida aprobada", comparison.issueCount ? `${comparison.issueCount} diferencia(s) detectada(s)` : "Inventario devuelto sin diferencias nuevas", status, user?.name || "Recepción", now).run();
+    await logAudit(request, user, { action: comparison.issueCount ? "SALIDA_REVISION_PENDIENTE" : "SALIDA_REVISION_CONFORME", entityType: "EXIT_ASSESSMENT", entityId: assessmentId, roomId, newValue: comparison, reason: String(body.notes || "").trim() || "Comparación de entrega y devolución" }, now);
+    return Response.json({ ok: true, assessmentId, pending: comparison.issueCount > 0 });
+  }
+
+  if (body.action === "exit_assessment_review") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede resolver revisiones de salida observadas." }, { status: 403 });
+    const assessmentId = Number(body.assessmentId);
+    const decision = String(body.decision || "");
+    const reviewNote = String(body.reviewNote || "").trim();
+    if (!assessmentId || !["APROBADA", "RECHAZADA"].includes(decision) || !reviewNote) return Response.json({ error: "Indica la decisión y una nota administrativa." }, { status: 400 });
+    const assessment = await env.DB.prepare("SELECT id, room_id, stay_id, discrepancies FROM exit_assessments WHERE id = ? AND status = 'PENDIENTE'").bind(assessmentId).first<{ id: number; room_id: number; stay_id: number; discrepancies: string }>();
+    if (!assessment) return Response.json({ error: "La revisión ya fue resuelta o no existe." }, { status: 409 });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE exit_assessments SET status = ?, reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ? WHERE id = ? AND status = 'PENDIENTE'").bind(decision, user?.id || null, user?.name || "Administración", now, reviewNote, assessmentId),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', ?, ?, ?, ?, ?)").bind(assessment.room_id, assessment.stay_id, decision === "APROBADA" ? "Revisión de salida autorizada" : "Revisión de salida rechazada", reviewNote, decision, user?.name || "Administración", now),
+    ]);
+    await logAudit(request, user, { action: decision === "APROBADA" ? "SALIDA_REVISION_APROBADA" : "SALIDA_REVISION_RECHAZADA", entityType: "EXIT_ASSESSMENT", entityId: assessmentId, roomId: assessment.room_id, oldValue: JSON.parse(assessment.discrepancies), newValue: { status: decision }, reason: reviewNote }, now);
+    return Response.json({ ok: true });
+  }
+
+  if (body.action === "exit_assessment_resubmit") {
+    const assessmentId = Number(body.assessmentId);
+    const notes = String(body.notes || "").trim();
+    const assessment = await env.DB.prepare(`SELECT a.id, a.room_id, a.stay_id, a.work_order_id, w.status AS work_order_status
+      FROM exit_assessments a LEFT JOIN work_orders w ON w.id = a.work_order_id WHERE a.id = ? AND a.status = 'RECHAZADA'`).bind(assessmentId).first<{ id: number; room_id: number; stay_id: number; work_order_id: number | null; work_order_status: string | null }>();
+    if (!assessment) return Response.json({ error: "La revisión no está disponible para reenvío." }, { status: 409 });
+    if (assessment.work_order_id && assessment.work_order_status !== "COMPLETADO") return Response.json({ error: "Primero completa la tarea bloqueante asociada a las observaciones." }, { status: 409 });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE exit_assessments SET status = 'PENDIENTE', notes = ?, reviewed_by_user_id = NULL, reviewed_by_name = NULL, reviewed_at = NULL, review_note = NULL, submitted_by_user_id = ?, submitted_by_name = ?, submitted_at = ? WHERE id = ? AND status = 'RECHAZADA'").bind(notes, user?.id || 0, user?.name || "Recepción", now, assessmentId),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', 'Revisión de salida reenviada', ?, 'PENDIENTE', ?, ?)").bind(assessment.room_id, assessment.stay_id, notes || "Observaciones corregidas", user?.name || "Recepción", now),
+    ]);
+    await logAudit(request, user, { action: "SALIDA_REVISION_REENVIADA", entityType: "EXIT_ASSESSMENT", entityId: assessmentId, roomId: assessment.room_id, newValue: { status: "PENDIENTE" }, reason: notes || "Observaciones corregidas" }, now);
+    return Response.json({ ok: true, pending: true });
+  }
 
   if (body.action === "primary_transfer_submit") {
     const proposedGuestId = Number(body.proposedGuestId);
@@ -724,6 +819,8 @@ export async function POST(request: Request) {
     if (!deliverySigned) return Response.json({ error: "Carga la fotografía del acta de entrega firmada." }, { status: 409 });
     if (!returnInspection) return Response.json({ error: "Primero completa el acta de devolución." }, { status: 409 });
     if (!returnSigned) return Response.json({ error: "Carga la fotografía del acta de devolución firmada." }, { status: 409 });
+    const exitAssessment = await env.DB.prepare("SELECT status FROM exit_assessments WHERE segment_id = ? AND return_inspection_id = ? ORDER BY submitted_at DESC LIMIT 1").bind(segment.id, (returnInspection as { id: number }).id).first<{ status: string }>();
+    if (!exitAssessment || !["SIN_OBSERVACIONES", "APROBADA"].includes(exitAssessment.status)) return Response.json({ error: "La revisión comparativa de salida debe estar conforme o aprobada antes de cerrar la estadía." }, { status: 409 });
     const existingTurnover = await env.DB.prepare("SELECT id FROM room_turnovers WHERE room_id = ? AND status != 'COMPLETADO' LIMIT 1").bind(roomId).first();
     if (existingTurnover) return Response.json({ error: "Esta habitación ya tiene un cierre operativo pendiente." }, { status: 409 });
     await env.DB.batch([
@@ -751,10 +848,12 @@ export async function POST(request: Request) {
     const segment = await env.DB.prepare("SELECT id, sequence FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number; sequence: number }>();
     if (!segment) return Response.json({ error: "No existe un segmento activo para trasladar." }, { status: 409 });
     const [returnInspection, returnSigned] = await Promise.all([
-      env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first(),
+      env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first<{ id: number }>(),
       env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_DEVOLUCION_FIRMADA' LIMIT 1").bind(segment.id).first(),
     ]);
     if (!returnInspection || !returnSigned) return Response.json({ error: "Antes del traslado completa la devolución y carga el acta firmada de la habitación actual." }, { status: 409 });
+    const exitAssessment = await env.DB.prepare("SELECT status FROM exit_assessments WHERE segment_id = ? AND return_inspection_id = ? ORDER BY submitted_at DESC LIMIT 1").bind(segment.id, returnInspection.id).first<{ status: string }>();
+    if (!exitAssessment || !["SIN_OBSERVACIONES", "APROBADA"].includes(exitAssessment.status)) return Response.json({ error: "Antes del traslado, la revisión comparativa de devolución debe estar conforme o aprobada." }, { status: 409 });
     const segmentReason = `TRASLADO: ${reason}${overCapacity ? " · Sobrecapacidad autorizada" : ""}`;
     await env.DB.batch([
       env.DB.prepare("UPDATE stay_room_segments SET ended_at = ?, end_reason = ?, ended_by = ? WHERE id = ?").bind(now, segmentReason, user?.name || "Recepción", segment.id),

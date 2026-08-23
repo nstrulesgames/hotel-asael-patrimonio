@@ -123,3 +123,35 @@ test("traspasa titularidad con aprobación y conserva el historial", async () =>
   assert.match(dashboard, /function PrimaryTransferForm/);
   assert.match(dashboard, /Aprobar traspaso/);
 });
+
+test("compara entrega y devolución sin penalizar observaciones preexistentes", async () => {
+  const [schema, route, dashboard, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0012_glamorous_morlocks.sql"), "utf8"),
+  ]);
+  assert.match(schema, /exitAssessments/);
+  assert.match(migration, /CREATE TABLE `exit_assessments`/);
+  assert.match(route, /compareDeliveryAndReturn/);
+  assert.match(route, /severity\[returnedCondition\].*>.*severity\[delivered\.condition\]/s);
+  assert.match(route, /quantityMissing/);
+  assert.match(dashboard, /function ExitAssessmentForm/);
+  assert.match(dashboard, /Revisión comparativa de salida/);
+});
+
+test("bloquea la salida observada y crea una tarea hasta la resolución", async () => {
+  const [route, dashboard] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+  ]);
+  assert.match(route, /exit_assessment_submit/);
+  assert.match(route, /exit_assessment_review/);
+  assert.match(route, /exit_assessment_resubmit/);
+  assert.match(route, /Resolver observaciones de devolución/);
+  assert.match(route, /blocks_room/);
+  assert.match(route, /\["SIN_OBSERVACIONES", "APROBADA"\]\.includes\(exitAssessment\.status\)/);
+  assert.match(route, /Primero completa la tarea bloqueante asociada/);
+  assert.match(dashboard, /Autorizar salida/);
+  assert.match(dashboard, /Completa primero la tarea bloqueante/);
+});
