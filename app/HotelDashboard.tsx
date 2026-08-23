@@ -80,7 +80,11 @@ export default function HotelDashboard() {
   const operationalRooms = useMemo(() => data?.rooms.filter((room) => Boolean(room.active)) || [], [data]);
   const visibleRooms = useMemo(() => operationalRooms.filter((room) => activeFloor === "all" || room.floor_id === activeFloor), [operationalRooms, activeFloor]);
   const counts = useMemo(() => Object.fromEntries(statusOrder.map((status) => [status, operationalRooms.filter((room) => room.status === status).length])), [operationalRooms]);
-  const pendingApprovals = data.changeRequests.filter((request) => request.status === "PENDIENTE").length + data.primaryTransfers.filter((request) => request.status === "PENDIENTE").length + data.exitAssessments.filter((request) => request.status === "PENDIENTE").length;
+  const pendingApprovals = data
+    ? data.changeRequests.filter((request) => request.status === "PENDIENTE").length
+      + data.primaryTransfers.filter((request) => request.status === "PENDIENTE").length
+      + data.exitAssessments.filter((request) => request.status === "PENDIENTE").length
+    : 0;
 
   const openRoom = (room: Room) => { setSelected(room); setModal("room"); };
 

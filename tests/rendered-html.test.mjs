@@ -4,6 +4,13 @@ import test from "node:test";
 
 const projectFile = (path) => new URL("../" + path, import.meta.url);
 
+test("tolera el primer render mientras los datos del hotel todavía cargan", async () => {
+  const dashboard = await readFile(projectFile("app/HotelDashboard.tsx"), "utf8");
+  assert.match(dashboard, /const pendingApprovals = data\s*\?/);
+  assert.match(dashboard, /if \(!data\) return <div className="loading"/);
+  assert.doesNotMatch(dashboard, /const pendingApprovals = data\.changeRequests/);
+});
+
 test("incluye el tablero de tareas operativas en la interfaz", async () => {
   const dashboard = await readFile(projectFile("app/HotelDashboard.tsx"), "utf8");
   assert.match(dashboard, /Tareas operativas/);
