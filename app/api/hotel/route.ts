@@ -225,6 +225,35 @@ async function loadAuditFeed(role: string) {
   return { results };
 }
 
+type OperationalAlertRow = { type: string; room_id: number; room_number: string; stay_id?: number; work_order_id?: number; created_at: string; days_overdue: number };
+
+async function loadOperationalAlerts() {
+  const groups = await Promise.all([
+    env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, NULL AS work_order_id, seg.started_at AS created_at, CAST(julianday('now') - julianday(seg.started_at) AS INTEGER) AS days_overdue
+      FROM stays s JOIN rooms r ON r.id = s.room_id JOIN stay_room_segments seg ON seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL
+      WHERE s.status = 'ACTIVA' AND julianday('now') - julianday(seg.started_at) >= 1
+      AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.segment_id = seg.id AND d.category = 'ACTA_ENTREGA_FIRMADA')`).all<OperationalAlertRow>(),
+    env.DB.prepare(`SELECT 'CIERRE_OPERATIVO' AS type, r.id AS room_id, r.number AS room_number, t.stay_id, NULL AS work_order_id, t.created_at, 0 AS days_overdue
+      FROM room_turnovers t JOIN rooms r ON r.id = t.room_id WHERE t.status != 'COMPLETADO'`).all<OperationalAlertRow>(),
+    env.DB.prepare(`SELECT 'ESTADIA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, NULL AS work_order_id, s.expected_check_out AS created_at, CAST(julianday('now') - julianday(s.expected_check_out) AS INTEGER) AS days_overdue
+      FROM stays s JOIN rooms r ON r.id = s.room_id WHERE s.status = 'ACTIVA' AND s.expected_check_out IS NOT NULL AND datetime(s.expected_check_out, '+1 day') < datetime('now')`).all<OperationalAlertRow>(),
+    env.DB.prepare(`SELECT CASE WHEN datetime(w.due_at) < datetime('now') THEN 'TAREA_VENCIDA' ELSE 'TAREA_POR_VENCER' END AS type,
+        r.id AS room_id, r.number AS room_number, w.stay_id, w.id AS work_order_id, w.due_at AS created_at,
+        CASE WHEN datetime(w.due_at) < datetime('now') THEN CAST(julianday('now') - julianday(w.due_at) AS INTEGER) ELSE 0 END AS days_overdue
+      FROM work_orders w JOIN rooms r ON r.id = w.room_id
+      WHERE w.status IN ('PENDIENTE', 'EN_PROCESO') AND w.due_at IS NOT NULL AND datetime(w.due_at) <= datetime('now', '+1 day')`).all<OperationalAlertRow>(),
+    env.DB.prepare(`SELECT 'CONTRATO_SIN_RESPALDO' AS type, s.room_id, r.number AS room_number, c.stay_id, NULL AS work_order_id, c.created_at, 0 AS days_overdue
+      FROM contracts c JOIN stays s ON s.id = c.stay_id JOIN rooms r ON r.id = s.room_id
+      WHERE c.status = 'PENDIENTE_DOCUMENTO'`).all<OperationalAlertRow>(),
+    env.DB.prepare(`SELECT CASE WHEN date(c.end_date) < date('now') THEN 'CONTRATO_VENCIDO' ELSE 'CONTRATO_POR_VENCER' END AS type,
+        s.room_id, r.number AS room_number, c.stay_id, NULL AS work_order_id, c.end_date AS created_at,
+        CASE WHEN date(c.end_date) < date('now') THEN CAST(julianday('now') - julianday(c.end_date) AS INTEGER) ELSE 0 END AS days_overdue
+      FROM contracts c JOIN stays s ON s.id = c.stay_id JOIN rooms r ON r.id = s.room_id
+      WHERE c.status = 'VIGENTE' AND c.end_date IS NOT NULL AND date(c.end_date) <= date('now', '+7 days')`).all<OperationalAlertRow>(),
+  ]);
+  return { results: groups.flatMap((group) => group.results).sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))) };
+}
+
 export async function GET(request: Request) {
   await ensureDatabase();
   let user;
@@ -254,32 +283,7 @@ export async function GET(request: Request) {
       (SELECT COUNT(*) FROM documents d WHERE d.contract_id = c.id AND d.category = 'CONTRATO') AS document_count
       FROM contracts c JOIN guests g ON g.id = c.primary_guest_id JOIN rooms r ON r.id = c.initial_room_id ORDER BY c.created_at DESC`).all(),
     env.DB.prepare("SELECT id, room_id, stay_id, segment_id, work_order_id, inventory_movement_id, contract_id, phase, category, description, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
-    env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, NULL AS work_order_id, seg.started_at AS created_at, CAST(julianday('now') - julianday(seg.started_at) AS INTEGER) AS days_overdue
-      FROM stays s JOIN rooms r ON r.id = s.room_id JOIN stay_room_segments seg ON seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL
-      WHERE s.status = 'ACTIVA' AND julianday('now') - julianday(seg.started_at) >= 1
-      AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.segment_id = seg.id AND d.category = 'ACTA_ENTREGA_FIRMADA')
-      UNION ALL
-      SELECT 'CIERRE_OPERATIVO', r.id, r.number, t.stay_id, NULL, t.created_at, 0
-      FROM room_turnovers t JOIN rooms r ON r.id = t.room_id WHERE t.status != 'COMPLETADO'
-      UNION ALL
-      SELECT 'ESTADIA_VENCIDA', r.id, r.number, s.id, NULL, s.expected_check_out, CAST(julianday('now') - julianday(s.expected_check_out) AS INTEGER)
-      FROM stays s JOIN rooms r ON r.id = s.room_id WHERE s.status = 'ACTIVA' AND s.expected_check_out IS NOT NULL AND datetime(s.expected_check_out, '+1 day') < datetime('now')
-      UNION ALL
-      SELECT CASE WHEN datetime(w.due_at) < datetime('now') THEN 'TAREA_VENCIDA' ELSE 'TAREA_POR_VENCER' END,
-        r.id, r.number, w.stay_id, w.id, w.due_at,
-        CASE WHEN datetime(w.due_at) < datetime('now') THEN CAST(julianday('now') - julianday(w.due_at) AS INTEGER) ELSE 0 END
-      FROM work_orders w JOIN rooms r ON r.id = w.room_id
-      WHERE w.status IN ('PENDIENTE', 'EN_PROCESO') AND w.due_at IS NOT NULL AND datetime(w.due_at) <= datetime('now', '+1 day')
-      UNION ALL
-      SELECT 'CONTRATO_SIN_RESPALDO', s.room_id, r.number, c.stay_id, NULL, c.created_at, 0
-      FROM contracts c JOIN stays s ON s.id = c.stay_id JOIN rooms r ON r.id = s.room_id
-      WHERE c.status = 'PENDIENTE_DOCUMENTO'
-      UNION ALL
-      SELECT CASE WHEN date(c.end_date) < date('now') THEN 'CONTRATO_VENCIDO' ELSE 'CONTRATO_POR_VENCER' END,
-        s.room_id, r.number, c.stay_id, NULL, c.end_date,
-        CASE WHEN date(c.end_date) < date('now') THEN CAST(julianday('now') - julianday(c.end_date) AS INTEGER) ELSE 0 END
-      FROM contracts c JOIN stays s ON s.id = c.stay_id JOIN rooms r ON r.id = s.room_id
-      WHERE c.status = 'VIGENTE' AND c.end_date IS NOT NULL AND date(c.end_date) <= date('now', '+7 days')`).all(),
+    loadOperationalAlerts(),
     env.DB.prepare(`SELECT seg.*, r.number AS room_number,
       (SELECT COUNT(*) FROM documents d WHERE d.segment_id = seg.id) AS document_count,
       (SELECT COUNT(*) FROM inspections i WHERE i.segment_id = seg.id AND i.kind = 'ENTREGA') AS delivery_count,

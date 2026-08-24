@@ -43,6 +43,12 @@ const labels: Record<string, string> = {
 const statusOrder = ["DISPONIBLE", "OCUPADA", "LIMPIEZA", "MANTENIMIENTO", "FUERA_SERVICIO"];
 const evidenceLabels: Record<string, string> = { VISTA_GENERAL: "Vista general", CAMA: "Cama y ropa de cama", MUEBLES: "Muebles", BANO: "Baño", PAREDES_PISO_TECHO: "Paredes, piso y techo", PUERTAS_VENTANAS: "Puertas y ventanas", ILUMINACION_ENCHUFES: "Iluminación y enchufes", TELEVISION: "Televisión y equipos", VENTILADOR: "Ventilador", INVENTARIO_ADICIONAL: "Inventario adicional", DANOS: "Daños u observaciones", OTRA_EVIDENCIA: "Otra evidencia", CONTRATO: "Contrato", DOCUMENTO_IDENTIDAD: "Documento de identidad", SALIDA_SIN_FIRMA: "Salida sin firma", LIMPIEZA: "Limpieza", MANTENIMIENTO: "Mantenimiento", ACTA_ENTREGA_FIRMADA: "Acta de entrega firmada", ACTA_DEVOLUCION_FIRMADA: "Acta de devolución firmada" };
 
+async function readJsonResponse(response: Response, fallback: string) {
+  const body = await response.text();
+  if (!body.trim()) throw new Error(response.ok ? fallback : "El servidor no pudo responder. Intenta nuevamente.");
+  try { return JSON.parse(body); } catch { throw new Error(response.ok ? fallback : "El servidor devolvió una respuesta inválida. Intenta nuevamente."); }
+}
+
 export default function HotelDashboard() {
   const [data, setData] = useState<Data | null>(null);
   const [activeFloor, setActiveFloor] = useState<number | "all">("all");
@@ -57,7 +63,7 @@ export default function HotelDashboard() {
 
   const load = useCallback(async () => {
     const response = await fetch("/api/hotel", { cache: "no-store" });
-    const result = await response.json();
+    const result = await readJsonResponse(response, "No se pudo cargar el hotel. Intenta nuevamente.");
     if (!response.ok) throw new Error(result.error || "No se pudo cargar el hotel");
     setData(result);
     setSelected((current) => current ? result.rooms.find((room: Room) => room.id === current.id) || null : null);
@@ -70,7 +76,7 @@ export default function HotelDashboard() {
     setBusy(true); setNotice("");
     try {
       const response = await fetch("/api/hotel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-      const result = await response.json();
+      const result = await readJsonResponse(response, "No se pudo completar la operación. Intenta nuevamente.");
       if (!response.ok) throw new Error(result.error || "No se pudo completar la operación");
       await load();
       setModal(null);
@@ -94,7 +100,7 @@ export default function HotelDashboard() {
 
   const openRoom = (room: Room) => { setSelected(room); setModal("room"); };
 
-  if (!data && notice) return <div className="access-blocked"><span className="brand-mark">A</span><h1>Acceso no disponible</h1><p>{notice}</p><a href="/signout-with-chatgpt?return_to=/">Usar otro correo</a></div>;
+  if (!data && notice) return <div className="access-blocked"><div className="panel"><span className="brand-mark">A</span><h1>No pudimos cargar el hotel</h1><p>{notice}</p><div className="access-actions"><button className="primary" onClick={() => { setNotice(""); load().catch((error) => setNotice(error.message)); }}>Intentar nuevamente</button><a href="/signout-with-chatgpt?return_to=/">Usar otro correo</a></div></div></div>;
   if (!data) return <div className="loading"><span className="brand-mark">A</span><p>Preparando Hotel ASAEL…</p></div>;
 
   return (

@@ -329,3 +329,19 @@ test("exporta CSV seguro para Excel y ofrece un resumen imprimible", async () =>
   assert.match(dashboard, /Imprimir \/ Guardar PDF/);
   assert.match(dashboard, /window\.print\(\)/);
 });
+
+test("carga alertas operativas sin depender de una consulta UNION frágil", async () => {
+  const route = await readFile(projectFile("app/api/hotel/route.ts"), "utf8");
+  assert.match(route, /async function loadOperationalAlerts/);
+  assert.match(route, /groups\.flatMap\(\(group\) => group\.results\)/);
+  assert.match(route, /loadOperationalAlerts\(\)/);
+  assert.doesNotMatch(route, /CONTRATO_SIN_RESPALDO[\s\S]{0,500}UNION ALL/);
+});
+
+test("maneja respuestas vacías de la API y permite reintentar", async () => {
+  const dashboard = await readFile(projectFile("app/HotelDashboard.tsx"), "utf8");
+  assert.match(dashboard, /async function readJsonResponse/);
+  assert.match(dashboard, /await response\.text\(\)/);
+  assert.match(dashboard, /Intentar nuevamente/);
+  assert.match(dashboard, /No pudimos cargar el hotel/);
+});
