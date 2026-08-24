@@ -120,6 +120,13 @@
       "when": 1787583609691,
       "tag": "0016_rich_roughhouse",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1787608057434,
+      "tag": "0017_overrated_giant_man",
+      "breakpoints": true
     }
   ]
 }

@@ -346,3 +346,55 @@ export const auditLogs = sqliteTable("audit_logs", {
   sessionInfo: text("session_info"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_audit_logs_created").on(table.createdAt), index("idx_audit_logs_room_created").on(table.roomId, table.createdAt)]);
+
+export const commercialProducts = sqliteTable("commercial_products", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  sku: text("sku").notNull().unique(),
+  name: text("name").notNull(),
+  category: text("category").notNull().default("OTROS"),
+  purchaseUnit: text("purchase_unit").notNull(),
+  saleUnit: text("sale_unit").notNull(),
+  unitsPerPurchase: integer("units_per_purchase").notNull().default(1),
+  salePriceCents: integer("sale_price_cents").notNull().default(0),
+  averageCostCents: integer("average_cost_cents").notNull().default(0),
+  minimumStock: integer("minimum_stock").notNull().default(0),
+  tracksExpiry: integer("tracks_expiry", { mode: "boolean" }).notNull().default(false),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedBy: text("updated_by"),
+  updatedAt: text("updated_at"),
+}, (table) => [index("idx_commercial_products_active_name").on(table.active, table.name)]);
+
+export const stockLocations = sqliteTable("stock_locations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull(),
+});
+
+export const stockBatches = sqliteTable("stock_batches", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  locationId: integer("location_id").notNull(),
+  quantity: integer("quantity").notNull().default(0),
+  unitCostCents: integer("unit_cost_cents").notNull().default(0),
+  expiresOn: text("expires_on"),
+  receivedAt: text("received_at").notNull(),
+  createdBy: text("created_by").notNull(),
+}, (table) => [index("idx_stock_batches_product_location_expiry").on(table.productId, table.locationId, table.expiresOn)]);
+
+export const stockMovements = sqliteTable("stock_movements", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  fromLocationId: integer("from_location_id"),
+  toLocationId: integer("to_location_id"),
+  movementType: text("movement_type", { enum: ["ENTRADA", "TRANSFERENCIA", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO", "VENCIMIENTO", "DEVOLUCION"] }).notNull(),
+  quantity: integer("quantity").notNull(),
+  totalCostCents: integer("total_cost_cents").notNull().default(0),
+  reason: text("reason").notNull(),
+  responsible: text("responsible").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_stock_movements_product_created").on(table.productId, table.createdAt), index("idx_stock_movements_locations_created").on(table.fromLocationId, table.toLocationId, table.createdAt)]);

@@ -692,9 +692,192 @@ La primera versión operativa se considera lista cuando:
 
 ---
 
-## 20. Instrucción final para el equipo o agente desarrollador
+## 20. Mini POS y almacén comercial
+
+El sistema incorporará un mini POS relacionado con huéspedes, estadías y habitaciones, además de un almacén comercial separado del inventario físico entregado con las habitaciones. El módulo completo de pagos, cuentas, caja y facturación seguirá siendo una fase posterior, pero el POS podrá distinguir ventas pagadas y cargos pendientes.
+
+### Reglas confirmadas de ventas
+
+1. Permitir ventas a huéspedes y ventas directas a personas externas o trabajadores.
+2. Toda venta a un huésped debe relacionarse obligatoriamente con una estadía activa. Las operaciones sin estadía se registran como venta directa.
+3. Cuando compre un acompañante, registrar quién realizó el consumo, pero mantener la responsabilidad económica en el titular de la estadía.
+4. No implementar minibar ni consumos automáticos detectados en habitación.
+5. Estados iniciales de venta: pagada, pendiente o cargada a habitación, anulada y devuelta. El pago parcial queda para el módulo financiero posterior.
+6. Una venta pendiente bloquea el cierre normal de la estadía. La salida excepcional requiere autorización de Administrador o Propietario y debe quedar auditada.
+7. Recepción puede cargar ventas pendientes a la habitación. Debe visualizar siempre el total acumulado. El sistema quedará preparado para exigir autorización al superar un límite configurable.
+8. Si el huésped cambia de habitación, los consumos permanecen relacionados con la misma estadía y el mismo titular, conservando la habitación donde se originó cada uno.
+
+### Productos y servicios
+
+- Catálogo inicial de referencia: agua, gaseosas, jugos, café, snacks, papel higiénico, jabón y otros productos configurables.
+- No incluir champú, detergente ni cepillos de dientes en el catálogo inicial.
+- Los productos descuentan existencias.
+- Los servicios sin existencias físicas serán un módulo opcional, desactivado inicialmente y habilitable únicamente desde una configuración administrativa protegida.
+- Cada producto tendrá un precio de venta único.
+- Recepción no puede modificar el precio durante una venta.
+- Manejar unidad de compra o almacenamiento y unidad de venta con conversión. Ejemplo: una caja de 12 botellas ingresa 12 unidades vendibles.
+
+### Ubicaciones y entradas de almacén
+
+- Manejar dos ubicaciones: Almacén principal y Stock de recepción.
+- Permitir transferencias auditadas entre ambas ubicaciones.
+- Al ingresar mercadería registrar obligatoriamente producto, cantidad, costo, fecha y responsable.
+- Proveedor, número de comprobante y fotografía del comprobante pueden ser opcionales inicialmente.
+- Registrar costo unitario y precio de venta para calcular margen y ganancia aproximada por producto.
+- Los costos, márgenes, ganancias y gráficos financieros solo serán visibles para Propietario y Administrador.
+- Controlar lotes y fechas de vencimiento para los productos correspondientes.
+- Cada producto tendrá un stock mínimo configurable y generará una alerta al alcanzarlo.
+
+### Permisos de existencias
+
+- Recepción consulta existencias y registra ventas.
+- Administrador registra entradas, transferencias, pérdidas y ajustes.
+- Propietario tiene acceso completo.
+- Todo ajuste exige motivo, responsable, fecha y hora.
+- Los motivos pueden incluir vencimiento, daño, consumo interno, cortesía, error de conteo, pérdida o corrección.
+- Ningún movimiento de existencias se elimina físicamente.
+
+### Anulación y evidencia
+
+- Recepción puede anular una venta en cualquier momento, siempre con motivo obligatorio. No se aplicará una ventana máxima de anulación.
+- La venta anulada permanece visible como evidencia y conserva productos, cantidades, total, vendedor, responsable de anulación, fecha, hora y motivo.
+- La anulación no devolverá automáticamente los productos al stock. Si corresponde corregir existencias, deberá registrarse expresamente mediante un movimiento auditado, manteniendo visible la evidencia de la operación original.
+
+### Devoluciones
+
+- Permitir devoluciones parciales.
+- Registrar producto, cantidad devuelta, motivo, responsable, estado físico y si puede regresar al stock.
+- Si un producto vuelve al stock, generar un movimiento de entrada identificado expresamente como devolución.
+- Toda devolución o anulación exige un motivo obligatorio. Ofrecer motivos rápidos y un campo adicional de observación.
+- Recepción puede consultar las anulaciones de su turno. Administrador y Propietario pueden consultar el historial completo.
+
+### Comprobante interno
+
+Generar un comprobante interno con:
+
+- Identidad del Hotel ASAEL.
+- Número de venta.
+- Fecha y hora.
+- Habitación y estadía, cuando corresponda.
+- Huésped titular.
+- Acompañante que realizó el consumo, cuando corresponda.
+- Productos o servicios, cantidades y precios.
+- Total.
+- Estado pagado o pendiente.
+- Forma de pago.
+- Trabajador que atendió.
+- Espacio opcional para firma.
+
+Preparar formato térmico y formato PDF o tamaño carta para no depender de un modelo específico de impresora.
+
+No implementar facturación fiscal en esta etapa. El documento será únicamente un comprobante interno.
+
+Permitir reimpresiones. Cada nueva copia debe mostrar la palabra `REIMPRESIÓN` y registrar usuario, fecha, hora y cantidad de reimpresiones.
+
+### Caja, turnos y formas de pago
+
+- Preparar desde el POS la relación entre cada venta y su forma de pago.
+- El control financiero completo continuará siendo un bloque posterior, pero el modelo debe admitir caja y turnos desde el inicio.
+- Cada trabajador realiza apertura y cierre de caja, registrando responsable, hora, monto inicial, monto final y observaciones.
+- Utilizar una caja compartida por recepción con cierre y entrega formal entre turnos. Cada venta conserva al trabajador que la realizó.
+- Registrar diferencias de caja con monto esperado, monto contado, diferencia, motivo, responsable y administrador que revisó.
+- Formas de pago iniciales: efectivo, transferencia bancaria, QR, pendiente o cargado a habitación, cortesía y otro.
+- Mantener QR y transferencia como formas separadas.
+- Permitir adjuntar opcionalmente una captura o documento como evidencia del pago digital.
+
+### Permisos comerciales
+
+Recepción puede:
+
+- Registrar ventas y cargarlas a una estadía.
+- Consultar existencias del Stock de recepción.
+- Imprimir y reimprimir comprobantes.
+- Anular ventas con motivo obligatorio.
+- Consultar ventas del turno actual, incluidas las realizadas por otra recepcionista del mismo turno.
+- Consultar consumos pendientes de una habitación.
+
+Recepción no puede modificar productos, precios, costos ni existencias manualmente, ni consultar el historial financiero completo.
+
+Administrador y Propietario pueden:
+
+- Crear, editar y desactivar productos.
+- Cambiar precios.
+- Consultar costos, márgenes y ganancias.
+- Registrar compras y entradas.
+- Transferir productos entre Almacén principal y Stock de recepción.
+- Ajustar existencias y registrar pérdidas.
+- Revisar anulaciones y devoluciones.
+- Configurar stock mínimo.
+- Consultar reportes completos.
+- Activar o desactivar el módulo opcional de servicios.
+
+Solamente el Propietario puede modificar configuraciones comerciales críticas o desactivar definitivamente el módulo.
+
+Cuando un trabajador sea desactivado, conservar permanentemente todas sus ventas, anulaciones, devoluciones y movimientos con su identidad histórica.
+
+### Reportes comerciales
+
+Implementar inicialmente:
+
+- Ventas diarias, semanales y mensuales.
+- Ventas por trabajador.
+- Ventas por huésped y habitación.
+- Ventas por producto y productos más vendidos.
+- Ventas pagadas y pendientes.
+- Anulaciones y devoluciones.
+- Entradas, salidas y transferencias de almacén.
+- Existencias por ubicación.
+- Productos con stock bajo.
+- Productos próximos a vencer.
+- Diferencias de inventario.
+- Cortesías y consumos internos.
+
+Para Administrador y Propietario, incluir costos, margen, ganancia aproximada por producto y gráficos de rentabilidad. Recepción no debe visualizar costos ni ganancias.
+
+### Controles finales del POS
+
+- No permitir ventas con existencias insuficientes ni stock negativo. Administración deberá registrar primero una entrada, transferencia o corrección auditada.
+- Cada estadía tendrá un límite configurable para consumos pendientes. El valor inicial será Bs 200 y podrá editarse desde Administración.
+- Cuando el nuevo consumo supere el límite pendiente, exigir autorización de Administrador o Propietario antes de confirmar la venta.
+- En ventas directas, permitir una operación rápida sin identificación obligatoria. Nombre, CI, teléfono y observación serán opcionales; Administración podrá configurar reglas adicionales para ventas de monto elevado.
+- Toda venta del POS descuenta exclusivamente del Stock de recepción. La existencia del Almacén principal no se considera disponible para venta hasta realizar una transferencia.
+- Recepción puede solicitar reposición. Administrador o Propietario confirma la transferencia, registrando quién entregó, quién recibió, cantidades, fecha y hora.
+- Calcular costos y ganancias mediante costo promedio ponderado cuando existan compras del mismo producto a precios diferentes.
+- Mostrar alertas de vencimiento con 30, 15 y 7 días de anticipación.
+- Aplicar rotación por vencimiento, utilizando primero el lote que vence antes.
+- Bloquear la venta de productos vencidos. Su retiro requiere un movimiento por vencimiento con motivo y responsable.
+- Recepción puede solicitar cortesías, pero solamente Administrador o Propietario puede autorizarlas. La cortesía descuenta stock y conserva su valor económico en los reportes.
+- Numerar ventas con el formato `V-AAAA-000001`, reiniciando la secuencia cada año.
+- Los números de ventas anuladas no se eliminan ni reutilizan.
+- Permitir anular una venta pendiente incluso después de un traslado o una salida excepcional, conservando la estadía, habitación de origen, habitación final, trabajador, fecha y motivo.
+- Una anulación posterior no modifica automáticamente las existencias. Cualquier corrección de stock debe registrarse por separado.
+
+### Flujo comercial resumido
+
+```text
+Venta a huésped
+→ Seleccionar estadía y persona que consume
+→ Agregar productos disponibles en Stock de recepción
+→ Validar precios, existencias, vencimientos y límite pendiente
+→ Registrar forma de pago o cargo a habitación
+→ Descontar stock
+→ Generar comprobante interno
+→ Conservar venta y movimientos en auditoría
+```
+
+```text
+Reposición
+→ Recepción solicita productos
+→ Administración autoriza
+→ Salida del Almacén principal
+→ Entrada al Stock de recepción
+→ Confirmación de entrega y recepción
+```
+
+---
+
+## 21. Instrucción final para el equipo o agente desarrollador
 
 Antes de implementar una función, valida que respete los estados, permisos, historial y excepciones descritos. Si aparece una ambigüedad que pueda cambiar el resultado operativo, formula una pregunta de negocio con un ejemplo concreto y una recomendación. No inventes reglas financieras ni legales.
 
 Implementa por fases, prueba cada transición de estado y conserva compatibilidad con los datos existentes. Prioriza una interfaz clara para personal no técnico, botones grandes para celular, captura directa de fotografías, mensajes comprensibles y prevención de errores antes que configuraciones excesivamente técnicas.
-

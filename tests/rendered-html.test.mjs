@@ -345,3 +345,43 @@ test("maneja respuestas vacías de la API y permite reintentar", async () => {
   assert.match(dashboard, /Intentar nuevamente/);
   assert.match(dashboard, /No pudimos cargar el hotel/);
 });
+
+test("persiste catálogo comercial, ubicaciones, lotes y movimientos", async () => {
+  const [schema, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("drizzle/0017_overrated_giant_man.sql"), "utf8"),
+  ]);
+  assert.match(schema, /export const commercialProducts/);
+  assert.match(schema, /export const stockLocations/);
+  assert.match(schema, /export const stockBatches/);
+  assert.match(schema, /export const stockMovements/);
+  assert.match(migration, /CREATE TABLE `commercial_products`/);
+  assert.match(migration, /CREATE TABLE `stock_locations`/);
+  assert.match(migration, /idx_stock_batches_product_location_expiry/);
+  assert.match(migration, /idx_stock_movements_product_created/);
+});
+
+test("protege costos y operaciones comerciales según el rol", async () => {
+  const route = await readFile(projectFile("app/api/store/route.ts"), "utf8");
+  assert.match(route, /user\.role === "PROPIETARIO" \|\| user\.role === "ADMINISTRADOR"/);
+  assert.match(route, /Solo Administración puede modificar catálogo o existencias/);
+  assert.match(route, /average_cost_cents: null, main_stock: null/);
+  assert.match(route, /total_cost_cents: null/);
+  assert.match(route, /available < quantity/);
+  assert.match(route, /ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END/);
+});
+
+test("integra la pantalla de almacén con catálogo, ingresos y transferencias", async () => {
+  const [dashboard, store] = await Promise.all([
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("app/StoreView.tsx"), "utf8"),
+  ]);
+  assert.match(dashboard, /<StoreView \/>/);
+  assert.match(dashboard, /> Almacén<\/button>/);
+  assert.match(store, /Nuevo producto/);
+  assert.match(store, /Ingreso al almacén/);
+  assert.match(store, /Reponer recepción/);
+  assert.match(store, /Almacén principal \+ Recepción/);
+  assert.match(store, /Stock mínimo/);
+  assert.match(store, /Vencimientos ≤ 30 días/);
+});
