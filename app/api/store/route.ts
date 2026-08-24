@@ -60,6 +60,10 @@ async function saleReceipt(user: StoreUser, saleNumber: string) {
   if (!sale) return new Response("Comprobante no encontrado", { status: 404 });
   const items = await env.DB.prepare("SELECT product_name, product_sku, quantity, unit_price_cents, total_price_cents FROM sale_items WHERE sale_id = ? ORDER BY id")
     .bind(sale.id).all<Record<string, unknown>>();
+  const [payments, returns] = await Promise.all([
+    env.DB.prepare("SELECT payment_method, amount_cents, reference, received_at FROM sale_payments WHERE sale_id = ? ORDER BY received_at").bind(sale.id).all<Record<string, unknown>>(),
+    env.DB.prepare("SELECT return_number, refund_method, refund_amount_cents, created_at FROM sale_returns WHERE sale_id = ? ORDER BY created_at").bind(sale.id).all<Record<string, unknown>>(),
+  ]);
   const previousPrints = Number(sale.print_count || 0);
   const now = new Date().toISOString();
   const statements = [env.DB.prepare("UPDATE sales SET print_count = print_count + 1 WHERE id = ?").bind(sale.id)];
@@ -67,8 +71,13 @@ async function saleReceipt(user: StoreUser, saleNumber: string) {
     .bind(user.id, user.name, user.role, sale.id, `Reimpresión ${previousPrints + 1} de ${saleNumber}`, now));
   await env.DB.batch(statements);
   const rows = items.results.map((item) => `<tr><td>${escapeHtml(item.product_name)}</td><td>${item.quantity}</td><td>${money(Number(item.unit_price_cents))}</td><td>${money(Number(item.total_price_cents))}</td></tr>`).join("");
+  const paidCents = payments.results.reduce((sum, payment) => sum + Number(payment.amount_cents), 0);
+  const returnedCents = returns.results.reduce((sum, item) => sum + Number(item.refund_amount_cents), 0);
+  const balanceCents = Math.max(0, Number(sale.total_cents) - paidCents - returnedCents);
+  const paymentRows = payments.results.map((payment) => `<li>${escapeHtml(payment.payment_method)} · ${money(Number(payment.amount_cents))}${payment.reference ? ` · ${escapeHtml(payment.reference)}` : ""}</li>`).join("");
+  const returnRows = returns.results.map((item) => `<li>${escapeHtml(item.return_number)} · ${escapeHtml(item.refund_method)} · ${money(Number(item.refund_amount_cents))}</li>`).join("");
   const reprint = previousPrints > 0 ? `<div class="reprint">REIMPRESIÓN #${previousPrints + 1}</div>` : "";
-  return new Response(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escapeHtml(saleNumber)}</title><style>@page{margin:10mm}body{font:13px Arial,sans-serif;color:#17231e;max-width:720px;margin:24px auto}header{text-align:center;border-bottom:2px solid #1d5b43;padding-bottom:14px}h1{margin:0;font-size:24px}h2{font-size:16px}.reprint{margin:12px 0;padding:8px;border:2px solid #9b503a;color:#9b503a;font-weight:700;text-align:center}.facts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:18px 0}.facts span{padding:8px;background:#f3f5f2}table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}th:last-child,td:last-child{text-align:right}.total{text-align:right;font-size:18px;margin-top:16px}.notes{margin-top:18px;padding:10px;background:#f7f7f4}.print{display:block;margin:20px auto;padding:10px 18px}@media print{.print{display:none}body{margin:0}}</style></head><body><header><h1>Hotel ASAEL</h1><p>Comprobante interno de venta</p><h2>${escapeHtml(saleNumber)}</h2></header>${reprint}<div class="facts"><span><b>Fecha:</b> ${escapeHtml(new Date(String(sale.created_at)).toLocaleString("es-BO"))}</span><span><b>Estado:</b> ${escapeHtml(sale.status)}</span><span><b>Tipo:</b> ${sale.sale_type === "HUESPED" ? `Huésped · Habitación ${escapeHtml(sale.room_number)}` : "Venta directa"}</span><span><b>Forma:</b> ${escapeHtml(sale.payment_method)}</span><span><b>Cliente/consumidor:</b> ${escapeHtml(sale.consumer_name || sale.customer_name || "No registrado")}</span><span><b>Atendido por:</b> ${escapeHtml(sale.created_by_name)}</span></div><table><thead><tr><th>Producto</th><th>Cant.</th><th>P. unitario</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><p class="total"><b>Total: ${money(Number(sale.total_cents))}</b></p>${sale.notes ? `<div class="notes"><b>Observaciones:</b> ${escapeHtml(sale.notes)}</div>` : ""}<button class="print" onclick="window.print()">Imprimir comprobante</button></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+  return new Response(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escapeHtml(saleNumber)}</title><style>@page{margin:10mm}body{font:13px Arial,sans-serif;color:#17231e;max-width:720px;margin:24px auto}header{text-align:center;border-bottom:2px solid #1d5b43;padding-bottom:14px}h1{margin:0;font-size:24px}h2{font-size:16px}.reprint{margin:12px 0;padding:8px;border:2px solid #9b503a;color:#9b503a;font-weight:700;text-align:center}.facts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:18px 0}.facts span{padding:8px;background:#f3f5f2}table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}th:last-child,td:last-child{text-align:right}.total{text-align:right;font-size:18px;margin-top:16px}.ledger{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.ledger>div{padding:10px;background:#f4f5f2}.ledger h3{font-size:12px;margin:0 0 6px}.ledger ul{margin:0;padding-left:18px}.notes{margin-top:18px;padding:10px;background:#f7f7f4}.print{display:block;margin:20px auto;padding:10px 18px}@media print{.print{display:none}body{margin:0}}</style></head><body><header><h1>Hotel ASAEL</h1><p>Comprobante interno de venta</p><h2>${escapeHtml(saleNumber)}</h2></header>${reprint}<div class="facts"><span><b>Fecha:</b> ${escapeHtml(new Date(String(sale.created_at)).toLocaleString("es-BO"))}</span><span><b>Estado:</b> ${escapeHtml(sale.status)}</span><span><b>Tipo:</b> ${sale.sale_type === "HUESPED" ? `Huésped · Habitación ${escapeHtml(sale.room_number)}` : "Venta directa"}</span><span><b>Forma inicial:</b> ${escapeHtml(sale.payment_method)}</span><span><b>Cliente/consumidor:</b> ${escapeHtml(sale.consumer_name || sale.customer_name || "No registrado")}</span><span><b>Atendido por:</b> ${escapeHtml(sale.created_by_name)}</span></div><table><thead><tr><th>Producto</th><th>Cant.</th><th>P. unitario</th><th>Subtotal</th></tr></thead><tbody>${rows}</tbody></table><p class="total"><b>Total: ${money(Number(sale.total_cents))}</b><br>Pagado: ${money(paidCents)} · Devuelto: ${money(returnedCents)} · Saldo: ${money(balanceCents)}</p>${paymentRows || returnRows ? `<div class="ledger"><div><h3>Pagos</h3><ul>${paymentRows || "<li>Sin pagos</li>"}</ul></div><div><h3>Devoluciones</h3><ul>${returnRows || "<li>Sin devoluciones</li>"}</ul></div></div>` : ""}${sale.notes ? `<div class="notes"><b>Observaciones:</b> ${escapeHtml(sale.notes)}</div>` : ""}<button class="print" onclick="window.print()">Imprimir comprobante</button></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
 export async function GET(request: Request) {
@@ -79,7 +88,7 @@ export async function GET(request: Request) {
     const receiptNumber = cleanText(new URL(request.url).searchParams.get("receipt"), 30);
     if (receiptNumber) return saleReceipt(user, receiptNumber);
     const admin = isAdministrator(user);
-    const [locations, products, movements, expiring, activeStays, occupants, recentSales, pendingByStay] = await Promise.all([
+    const [locations, products, movements, expiring, activeStays, occupants, recentSales, pendingByStay, currentCashSession, cashSessions, saleItems, payments, returns, periodReports, productReports, workerReports, paymentReports] = await Promise.all([
       env.DB.prepare("SELECT id, code, name, active FROM stock_locations WHERE active = 1 ORDER BY CASE code WHEN 'MAIN' THEN 0 ELSE 1 END").all(),
       env.DB.prepare(`SELECT p.*,
         COALESCE(SUM(CASE WHEN location.code = 'MAIN' THEN batch.quantity ELSE 0 END), 0) AS main_stock,
@@ -109,16 +118,43 @@ export async function GET(request: Request) {
         WHERE membership.left_at IS NULL ORDER BY membership.is_primary DESC, guest.full_name COLLATE NOCASE`).all(),
       env.DB.prepare(`SELECT sale.id, sale.sale_number, sale.sale_type, sale.stay_id, sale.room_id, room.number AS room_number,
         sale.customer_name, sale.status, sale.payment_method, sale.total_cents, sale.print_count, sale.created_by_name, sale.created_at,
-        sale.cancelled_by_name, sale.cancelled_at, sale.cancellation_reason
+        sale.cancelled_by_name, sale.cancelled_at, sale.cancellation_reason, sale.cash_session_id,
+        COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) AS paid_cents,
+        COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0) AS returned_cents,
+        MAX(0, sale.total_cents - COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0)) AS balance_cents
         FROM sales sale LEFT JOIN rooms room ON room.id = sale.room_id
-        ${admin ? "" : "WHERE sale.created_by_user_id = " + Number(user.id) + " OR sale.created_at >= datetime('now', 'start of day')"}
+        ${admin ? "" : "WHERE sale.cash_session_id = (SELECT id FROM cash_sessions WHERE status = 'ABIERTA' ORDER BY opened_at DESC LIMIT 1) OR sale.created_by_user_id = " + Number(user.id)}
         ORDER BY sale.created_at DESC LIMIT 100`).all(),
-      env.DB.prepare(`SELECT stay_id, COUNT(*) AS sale_count, COALESCE(SUM(total_cents), 0) AS pending_cents
-        FROM sales WHERE status = 'PENDIENTE' AND stay_id IS NOT NULL GROUP BY stay_id`).all(),
+      env.DB.prepare(`SELECT sale.stay_id, COUNT(*) AS sale_count,
+        COALESCE(SUM(MAX(0, sale.total_cents - COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0))), 0) AS pending_cents
+        FROM sales sale WHERE sale.status = 'PENDIENTE' AND sale.stay_id IS NOT NULL GROUP BY sale.stay_id`).all(),
+      env.DB.prepare(`SELECT session.*,
+        COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.cash_session_id = session.id AND payment.payment_method = 'EFECTIVO'), 0) AS cash_income_cents,
+        COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.cash_session_id = session.id AND ret.refund_method = 'EFECTIVO'), 0) AS cash_refund_cents,
+        COALESCE((SELECT COUNT(*) FROM sales sale WHERE sale.cash_session_id = session.id), 0) AS sale_count
+        FROM cash_sessions session WHERE session.status = 'ABIERTA' ORDER BY session.opened_at DESC LIMIT 1`).first(),
+      env.DB.prepare(`SELECT session.* FROM cash_sessions session ${admin ? "" : "WHERE session.opened_by_user_id = " + Number(user.id) + " OR session.closed_by_user_id = " + Number(user.id)} ORDER BY session.opened_at DESC LIMIT 30`).all(),
+      env.DB.prepare(`SELECT item.*, COALESCE((SELECT SUM(returned.quantity) FROM sale_return_items returned WHERE returned.sale_item_id = item.id), 0) AS returned_quantity
+        FROM sale_items item WHERE item.sale_id IN (SELECT id FROM sales ORDER BY created_at DESC LIMIT 100) ORDER BY item.sale_id, item.id`).all(),
+      env.DB.prepare("SELECT payment.* FROM sale_payments payment WHERE payment.sale_id IN (SELECT id FROM sales ORDER BY created_at DESC LIMIT 100) ORDER BY payment.received_at").all(),
+      env.DB.prepare(`SELECT ret.*, COALESCE((SELECT SUM(item.quantity) FROM sale_return_items item WHERE item.return_id = ret.id), 0) AS item_count
+        FROM sale_returns ret WHERE ret.sale_id IN (SELECT id FROM sales ORDER BY created_at DESC LIMIT 100) ORDER BY ret.created_at DESC`).all(),
+      admin ? env.DB.prepare(`SELECT 'HOY' AS period, COALESCE(SUM(CASE WHEN sale.status != 'ANULADA' THEN sale.total_cents - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0) ELSE 0 END), 0) AS net_sales_cents, COUNT(CASE WHEN sale.status != 'ANULADA' THEN 1 END) AS sale_count FROM sales sale WHERE date(sale.created_at) = date('now')
+        UNION ALL SELECT 'SEMANA', COALESCE(SUM(CASE WHEN sale.status != 'ANULADA' THEN sale.total_cents - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0) ELSE 0 END), 0), COUNT(CASE WHEN sale.status != 'ANULADA' THEN 1 END) FROM sales sale WHERE date(sale.created_at) >= date('now', '-6 days')
+        UNION ALL SELECT 'MES', COALESCE(SUM(CASE WHEN sale.status != 'ANULADA' THEN sale.total_cents - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0) ELSE 0 END), 0), COUNT(CASE WHEN sale.status != 'ANULADA' THEN 1 END) FROM sales sale WHERE strftime('%Y-%m', sale.created_at) = strftime('%Y-%m', 'now')`).all() : Promise.resolve({ results: [] }),
+      admin ? env.DB.prepare(`SELECT item.product_id, item.product_name,
+        SUM(item.quantity - COALESCE(returned.quantity, 0)) AS units,
+        SUM(item.total_price_cents - COALESCE(returned.value_cents, 0)) AS revenue_cents,
+        SUM((item.quantity - COALESCE(returned.quantity, 0)) * item.unit_cost_cents) AS cost_cents
+        FROM sale_items item JOIN sales sale ON sale.id = item.sale_id
+        LEFT JOIN (SELECT sale_item_id, SUM(quantity) AS quantity, SUM(total_price_cents) AS value_cents FROM sale_return_items GROUP BY sale_item_id) returned ON returned.sale_item_id = item.id
+        WHERE sale.status != 'ANULADA' GROUP BY item.product_id, item.product_name ORDER BY units DESC LIMIT 10`).all() : Promise.resolve({ results: [] }),
+      admin ? env.DB.prepare(`SELECT sale.created_by_name, COUNT(*) AS sale_count, COALESCE(SUM(sale.total_cents), 0) AS sales_cents FROM sales sale WHERE sale.status != 'ANULADA' GROUP BY sale.created_by_name ORDER BY sales_cents DESC LIMIT 10`).all() : Promise.resolve({ results: [] }),
+      admin ? env.DB.prepare("SELECT payment_method, COUNT(*) AS payment_count, COALESCE(SUM(amount_cents), 0) AS amount_cents FROM sale_payments GROUP BY payment_method ORDER BY amount_cents DESC").all() : Promise.resolve({ results: [] }),
     ]);
     const safeProducts = products.results.map((product) => admin ? product : { ...product, average_cost_cents: null, main_stock: null });
     const safeMovements = movements.results.map((movement) => admin ? movement : { ...movement, total_cost_cents: null });
-    return Response.json({ user: { id: user.id, name: user.name, role: user.role }, locations: locations.results, products: safeProducts, movements: safeMovements, expiring: expiring.results, activeStays: activeStays.results, occupants: occupants.results, recentSales: recentSales.results, pendingByStay: pendingByStay.results, pendingLimitCents: 20000 });
+    return Response.json({ user: { id: user.id, name: user.name, role: user.role }, locations: locations.results, products: safeProducts, movements: safeMovements, expiring: expiring.results, activeStays: activeStays.results, occupants: occupants.results, recentSales: recentSales.results, pendingByStay: pendingByStay.results, pendingLimitCents: 20000, currentCashSession, cashSessions: cashSessions.results, saleItems: saleItems.results, payments: payments.results, returns: returns.results, reports: { periods: periodReports.results, products: productReports.results, workers: workerReports.results, paymentMethods: paymentReports.results } });
   } catch (error) {
     return apiError(error);
   }
@@ -132,7 +168,57 @@ export async function POST(request: Request) {
     const body = await request.json() as StorePayload;
     const now = new Date().toISOString();
 
+    if (body.action === "cash_open") {
+      const openingCashCents = nonNegativeInteger(body.openingCashCents);
+      const notes = cleanText(body.notes, 300);
+      if (openingCashCents < 0) return Response.json({ error: "Indica un monto inicial válido." }, { status: 400 });
+      const existing = await env.DB.prepare("SELECT id, opened_by_name FROM cash_sessions WHERE status = 'ABIERTA' LIMIT 1").first<{ id: number; opened_by_name: string }>();
+      if (existing) return Response.json({ error: `La caja ya está abierta por ${existing.opened_by_name}.` }, { status: 409 });
+      const inserted = await env.DB.prepare("INSERT INTO cash_sessions (status, opened_by_user_id, opened_by_name, opened_at, opening_cash_cents, opening_notes) VALUES ('ABIERTA', ?, ?, ?, ?, ?)").bind(user.id, user.name, now, openingCashCents, notes).run();
+      const sessionId = Number(inserted.meta.last_row_id);
+      await env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, new_value, reason, created_at) VALUES (?, ?, ?, 'CAJA_ABIERTA', 'CASH_SESSION', ?, ?, ?, ?)").bind(user.id, user.name, user.role, sessionId, String(openingCashCents), notes || "Inicio de turno", now).run();
+      return Response.json({ ok: true, sessionId });
+    }
+
+    if (body.action === "cash_close") {
+      const countedCashCents = nonNegativeInteger(body.countedCashCents);
+      const differenceReason = cleanText(body.differenceReason, 300);
+      const notes = cleanText(body.notes, 300);
+      if (countedCashCents < 0) return Response.json({ error: "Indica el efectivo contado al cierre." }, { status: 400 });
+      const session = await env.DB.prepare("SELECT * FROM cash_sessions WHERE status = 'ABIERTA' ORDER BY opened_at DESC LIMIT 1").first<Record<string, unknown>>();
+      if (!session) return Response.json({ error: "No existe una caja abierta." }, { status: 409 });
+      const [income, refunds] = await Promise.all([
+        env.DB.prepare("SELECT COALESCE(SUM(amount_cents), 0) AS total FROM sale_payments WHERE cash_session_id = ? AND payment_method = 'EFECTIVO'").bind(session.id).first<{ total: number }>(),
+        env.DB.prepare("SELECT COALESCE(SUM(refund_amount_cents), 0) AS total FROM sale_returns WHERE cash_session_id = ? AND refund_method = 'EFECTIVO'").bind(session.id).first<{ total: number }>(),
+      ]);
+      const expectedCashCents = Number(session.opening_cash_cents) + Number(income?.total || 0) - Number(refunds?.total || 0);
+      const differenceCents = countedCashCents - expectedCashCents;
+      if (differenceCents !== 0 && !differenceReason) return Response.json({ error: "Explica obligatoriamente la diferencia de caja." }, { status: 400 });
+      const status = differenceCents === 0 ? "CERRADA" : "PENDIENTE_REVISION";
+      await env.DB.batch([
+        env.DB.prepare("UPDATE cash_sessions SET status = ?, closed_by_user_id = ?, closed_by_name = ?, closed_at = ?, expected_cash_cents = ?, counted_cash_cents = ?, difference_cents = ?, difference_reason = ?, closing_notes = ? WHERE id = ? AND status = 'ABIERTA'").bind(status, user.id, user.name, now, expectedCashCents, countedCashCents, differenceCents, differenceReason || null, notes || null, session.id),
+        env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, old_value, new_value, reason, created_at) VALUES (?, ?, ?, 'CAJA_CERRADA', 'CASH_SESSION', ?, ?, ?, ?, ?)").bind(user.id, user.name, user.role, session.id, String(expectedCashCents), String(countedCashCents), differenceReason || notes || "Cierre conforme", now),
+      ]);
+      return Response.json({ ok: true, expectedCashCents, countedCashCents, differenceCents, status });
+    }
+
+    if (body.action === "cash_review") {
+      if (!isAdministrator(user)) return Response.json({ error: "Solo Administración puede revisar diferencias de caja." }, { status: 403 });
+      const sessionId = positiveInteger(body.sessionId);
+      const reviewNote = cleanText(body.reviewNote, 300);
+      if (!sessionId || !reviewNote) return Response.json({ error: "Indica la caja y la conclusión de la revisión." }, { status: 400 });
+      const session = await env.DB.prepare("SELECT id FROM cash_sessions WHERE id = ? AND status = 'PENDIENTE_REVISION'").bind(sessionId).first();
+      if (!session) return Response.json({ error: "La caja ya no tiene una diferencia pendiente." }, { status: 409 });
+      await env.DB.batch([
+        env.DB.prepare("UPDATE cash_sessions SET status = 'REVISADA', reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ? WHERE id = ?").bind(user.id, user.name, now, reviewNote, sessionId),
+        env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, reason, created_at) VALUES (?, ?, ?, 'CAJA_REVISADA', 'CASH_SESSION', ?, ?, ?)").bind(user.id, user.name, user.role, sessionId, reviewNote, now),
+      ]);
+      return Response.json({ ok: true });
+    }
+
     if (body.action === "sale_create") {
+      const cashSession = await env.DB.prepare("SELECT id FROM cash_sessions WHERE status = 'ABIERTA' ORDER BY opened_at DESC LIMIT 1").first<{ id: number }>();
+      if (!cashSession) return Response.json({ error: "Abre la caja de recepción antes de registrar ventas." }, { status: 409 });
       const rawItems = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
       const grouped = new Map<number, number>();
       rawItems.forEach((item) => { const productId = positiveInteger(item.productId); const quantity = positiveInteger(item.quantity); if (productId && quantity) grouped.set(productId, (grouped.get(productId) || 0) + quantity); });
@@ -184,7 +270,7 @@ export async function POST(request: Request) {
         totalCents += totalPriceCents;
         itemRows.push({ product, quantity: item.quantity, totalPriceCents, totalCostCents });
       }
-      const currentPending = stayId ? await env.DB.prepare("SELECT COALESCE(SUM(total_cents), 0) AS total FROM sales WHERE stay_id = ? AND status = 'PENDIENTE'").bind(stayId).first<{ total: number }>() : null;
+      const currentPending = stayId ? await env.DB.prepare(`SELECT COALESCE(SUM(MAX(0, sale.total_cents - COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0))), 0) AS total FROM sales sale WHERE sale.stay_id = ? AND sale.status = 'PENDIENTE'`).bind(stayId).first<{ total: number }>() : null;
       const pendingLimitCents = 20000;
       if (paymentMethod === "PENDIENTE" && (currentPending?.total || 0) + totalCents > pendingLimitCents && (!isAdministrator(user) || body.pendingOverride !== true)) {
         return Response.json({ error: `El saldo pendiente superaría ${money(pendingLimitCents)}. Requiere autorización administrativa.` }, { status: 403 });
@@ -195,8 +281,10 @@ export async function POST(request: Request) {
       const sequence = sequenceRow.next_value;
       const saleNumber = `V-${year}-${String(sequence).padStart(6, "0")}`;
       const status = paymentMethod === "PENDIENTE" ? "PENDIENTE" : "PAGADA";
-      const statements = [env.DB.prepare(`INSERT INTO sales (sale_number, sale_year, sequence, sale_type, stay_id, room_id, consumer_guest_id, customer_name, status, payment_method, subtotal_cents, total_cents, notes, print_count, created_by_user_id, created_by_name, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`).bind(saleNumber, year, sequence, saleType, stay?.id || null, stay?.room_id || null, consumerGuestId || (stay?.primary_guest_id ?? null), customerName, status, paymentMethod, totalCents, totalCents, cleanText(body.notes, 500), user.id, user.name, now)];
+      const statements = [env.DB.prepare(`INSERT INTO sales (sale_number, sale_year, sequence, sale_type, stay_id, room_id, consumer_guest_id, customer_name, status, payment_method, cash_session_id, subtotal_cents, total_cents, notes, print_count, created_by_user_id, created_by_name, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`).bind(saleNumber, year, sequence, saleType, stay?.id || null, stay?.room_id || null, consumerGuestId || (stay?.primary_guest_id ?? null), customerName, status, paymentMethod, cashSession.id, totalCents, totalCents, cleanText(body.notes, 500), user.id, user.name, now)];
+      if (paymentMethod !== "PENDIENTE") statements.push(env.DB.prepare("INSERT INTO sale_payments (sale_id, cash_session_id, payment_method, amount_cents, reference, received_by_user_id, received_by_name, received_at) VALUES ((SELECT id FROM sales WHERE sale_number = ?), ?, ?, ?, ?, ?, ?, ?)")
+        .bind(saleNumber, cashSession.id, paymentMethod, totalCents, cleanText(body.paymentReference, 150), user.id, user.name, now));
       itemRows.forEach((item) => {
         const unitCost = item.quantity ? Math.round(item.totalCostCents / item.quantity) : item.product.average_cost_cents;
         statements.push(env.DB.prepare(`INSERT INTO sale_items (sale_id, product_id, product_name, product_sku, quantity, unit_price_cents, unit_cost_cents, total_price_cents, total_cost_cents)
@@ -213,6 +301,89 @@ export async function POST(request: Request) {
         .bind(user.id, user.name, user.role, saleNumber, stay?.room_id || null, JSON.stringify({ saleNumber, status, paymentMethod, totalCents }), saleType === "HUESPED" ? `Venta vinculada a estadía ${stayId}` : "Venta directa", now));
       await env.DB.batch(statements);
       return Response.json({ ok: true, saleNumber, status, totalCents, receiptUrl: `/api/store?receipt=${encodeURIComponent(saleNumber)}` });
+    }
+
+    if (body.action === "sale_payment") {
+      const saleId = positiveInteger(body.saleId);
+      const amountCents = positiveInteger(body.amountCents);
+      const paymentMethod = cleanText(body.paymentMethod, 20).toUpperCase();
+      const reference = cleanText(body.reference, 150);
+      if (!saleId || !amountCents || !["EFECTIVO", "TRANSFERENCIA", "QR", "CORTESIA", "OTRO"].includes(paymentMethod)) return Response.json({ error: "Completa venta, monto y forma de cobro." }, { status: 400 });
+      if (paymentMethod === "CORTESIA" && !isAdministrator(user)) return Response.json({ error: "La cortesía requiere autorización de Administración." }, { status: 403 });
+      const cashSession = await env.DB.prepare("SELECT id FROM cash_sessions WHERE status = 'ABIERTA' ORDER BY opened_at DESC LIMIT 1").first<{ id: number }>();
+      if (!cashSession) return Response.json({ error: "Abre la caja antes de registrar cobros." }, { status: 409 });
+      const sale = await env.DB.prepare(`SELECT sale.id, sale.sale_number, sale.status, sale.room_id, sale.total_cents,
+        COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) AS paid_cents,
+        COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0) AS returned_cents
+        FROM sales sale WHERE sale.id = ?`).bind(saleId).first<{ id: number; sale_number: string; status: string; room_id: number | null; total_cents: number; paid_cents: number; returned_cents: number }>();
+      if (!sale || ["ANULADA", "DEVUELTA"].includes(sale.status)) return Response.json({ error: "La venta no admite nuevos cobros." }, { status: 409 });
+      const balanceCents = Math.max(0, sale.total_cents - sale.paid_cents - sale.returned_cents);
+      if (amountCents > balanceCents) return Response.json({ error: `El saldo máximo a cobrar es ${money(balanceCents)}.` }, { status: 409 });
+      const nextStatus = amountCents === balanceCents ? "PAGADA" : "PENDIENTE";
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO sale_payments (sale_id, cash_session_id, payment_method, amount_cents, reference, received_by_user_id, received_by_name, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(saleId, cashSession.id, paymentMethod, amountCents, reference, user.id, user.name, now),
+        env.DB.prepare("UPDATE sales SET status = ? WHERE id = ?").bind(nextStatus, saleId),
+        env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, room_id, new_value, reason, created_at) VALUES (?, ?, ?, 'PAGO_REGISTRADO', 'SALE', ?, ?, ?, ?, ?)").bind(user.id, user.name, user.role, saleId, sale.room_id, JSON.stringify({ amountCents, paymentMethod, nextStatus }), reference || `Cobro de ${sale.sale_number}`, now),
+      ]);
+      return Response.json({ ok: true, status: nextStatus, balanceCents: balanceCents - amountCents });
+    }
+
+    if (body.action === "sale_return") {
+      const saleId = positiveInteger(body.saleId);
+      const reason = cleanText(body.reason, 300);
+      const responsible = cleanText(body.responsible, 100);
+      const physicalCondition = cleanText(body.physicalCondition, 20).toUpperCase();
+      const returnsToStock = body.returnsToStock === true;
+      const refundMethod = cleanText(body.refundMethod, 20).toUpperCase();
+      const requestedItems = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
+      if (!saleId || !reason || !responsible || !["SELLADO", "BUENO", "ABIERTO", "DANADO"].includes(physicalCondition) || !["EFECTIVO", "TRANSFERENCIA", "QR", "SALDO", "SIN_REEMBOLSO", "OTRO"].includes(refundMethod)) return Response.json({ error: "Completa motivo, responsable, estado físico y forma de devolución." }, { status: 400 });
+      if (returnsToStock && !["SELLADO", "BUENO"].includes(physicalCondition)) return Response.json({ error: "Un producto abierto o dañado no puede volver al stock vendible." }, { status: 400 });
+      const cashSession = await env.DB.prepare("SELECT id FROM cash_sessions WHERE status = 'ABIERTA' ORDER BY opened_at DESC LIMIT 1").first<{ id: number }>();
+      if (!cashSession) return Response.json({ error: "Abre la caja antes de registrar devoluciones." }, { status: 409 });
+      const sale = await env.DB.prepare(`SELECT sale.id, sale.sale_number, sale.status, sale.room_id, sale.total_cents,
+        COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) AS paid_cents,
+        COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0) AS returned_cents
+        FROM sales sale WHERE sale.id = ?`).bind(saleId).first<{ id: number; sale_number: string; status: string; room_id: number | null; total_cents: number; paid_cents: number; returned_cents: number }>();
+      if (!sale || ["ANULADA", "DEVUELTA"].includes(sale.status)) return Response.json({ error: "La venta no admite devoluciones." }, { status: 409 });
+      const returnRows: Array<{ id: number; product_id: number; product_name: string; quantity: number; unit_price_cents: number; unit_cost_cents: number; returned_quantity: number; returnQuantity: number }> = [];
+      for (const requested of requestedItems) {
+        const saleItemId = positiveInteger(requested.saleItemId);
+        const returnQuantity = positiveInteger(requested.quantity);
+        if (!saleItemId || !returnQuantity) continue;
+        const item = await env.DB.prepare(`SELECT item.id, item.product_id, item.product_name, item.quantity, item.unit_price_cents, item.unit_cost_cents,
+          COALESCE((SELECT SUM(returned.quantity) FROM sale_return_items returned WHERE returned.sale_item_id = item.id), 0) AS returned_quantity
+          FROM sale_items item WHERE item.id = ? AND item.sale_id = ?`).bind(saleItemId, saleId).first<{ id: number; product_id: number; product_name: string; quantity: number; unit_price_cents: number; unit_cost_cents: number; returned_quantity: number }>();
+        if (!item || returnQuantity > item.quantity - item.returned_quantity) return Response.json({ error: "Una cantidad devuelta supera lo disponible en la venta." }, { status: 409 });
+        returnRows.push({ ...item, returnQuantity });
+      }
+      if (!returnRows.length) return Response.json({ error: "Selecciona al menos un producto y cantidad para devolver." }, { status: 400 });
+      const selectedValueCents = returnRows.reduce((sum, item) => sum + item.returnQuantity * item.unit_price_cents, 0);
+      const refundAmountCents = refundMethod === "SIN_REEMBOLSO" ? 0 : selectedValueCents;
+      if (refundMethod === "EFECTIVO" && refundAmountCents > sale.paid_cents) return Response.json({ error: "El reembolso en efectivo supera lo cobrado previamente." }, { status: 409 });
+      const inserted = await env.DB.prepare("INSERT INTO sale_returns (sale_id, reason, responsible, physical_condition, returns_to_stock, refund_method, refund_amount_cents, cash_session_id, created_by_user_id, created_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(saleId, reason, responsible, physicalCondition, returnsToStock ? 1 : 0, refundMethod, refundAmountCents, cashSession.id, user.id, user.name, now).run();
+      const returnId = Number(inserted.meta.last_row_id);
+      const returnNumber = `D-${sale.sale_number.slice(2)}-${String(returnId).padStart(3, "0")}`;
+      const reception = returnsToStock ? await env.DB.prepare("SELECT id FROM stock_locations WHERE code = 'RECEPTION' AND active = 1").first<{ id: number }>() : null;
+      if (returnsToStock && !reception) return Response.json({ error: "El stock de recepción no está disponible." }, { status: 409 });
+      const statements = [env.DB.prepare("UPDATE sale_returns SET return_number = ? WHERE id = ?").bind(returnNumber, returnId)];
+      returnRows.forEach((item) => {
+        const totalPriceCents = item.returnQuantity * item.unit_price_cents;
+        statements.push(env.DB.prepare("INSERT INTO sale_return_items (return_id, sale_item_id, product_id, product_name, quantity, unit_price_cents, unit_cost_cents, total_price_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(returnId, item.id, item.product_id, item.product_name, item.returnQuantity, item.unit_price_cents, item.unit_cost_cents, totalPriceCents));
+        if (returnsToStock && reception) {
+          statements.push(env.DB.prepare("INSERT INTO stock_batches (product_id, location_id, quantity, unit_cost_cents, expires_on, received_at, created_by) VALUES (?, ?, ?, ?, NULL, ?, ?)").bind(item.product_id, reception.id, item.returnQuantity, item.unit_cost_cents, now, user.name));
+          statements.push(env.DB.prepare("INSERT INTO stock_movements (product_id, from_location_id, to_location_id, movement_type, quantity, total_cost_cents, reason, responsible, created_by, created_at) VALUES (?, NULL, ?, 'DEVOLUCION', ?, ?, ?, ?, ?, ?)").bind(item.product_id, reception.id, item.returnQuantity, item.returnQuantity * item.unit_cost_cents, `${returnNumber}: ${reason}`, responsible, user.name, now));
+        }
+      });
+      const allItems = await env.DB.prepare(`SELECT item.id, item.quantity, COALESCE((SELECT SUM(returned.quantity) FROM sale_return_items returned WHERE returned.sale_item_id = item.id), 0) AS returned_quantity FROM sale_items item WHERE item.sale_id = ?`).bind(saleId).all<{ id: number; quantity: number; returned_quantity: number }>();
+      const newlyReturned = new Map(returnRows.map((item) => [item.id, item.returnQuantity]));
+      const fullyReturned = allItems.results.every((item) => item.returned_quantity + (newlyReturned.get(item.id) || 0) >= item.quantity);
+      const remainingBalance = Math.max(0, sale.total_cents - sale.paid_cents - sale.returned_cents - refundAmountCents);
+      const nextStatus = fullyReturned ? "DEVUELTA" : remainingBalance > 0 ? "PENDIENTE" : "PAGADA";
+      statements.push(env.DB.prepare("UPDATE sales SET status = ? WHERE id = ?").bind(nextStatus, saleId));
+      statements.push(env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, room_id, new_value, reason, created_at) VALUES (?, ?, ?, 'DEVOLUCION_REGISTRADA', 'SALE', ?, ?, ?, ?, ?)").bind(user.id, user.name, user.role, saleId, sale.room_id, JSON.stringify({ returnNumber, refundAmountCents, refundMethod, returnsToStock, nextStatus }), reason, now));
+      await env.DB.batch(statements);
+      return Response.json({ ok: true, returnNumber, refundAmountCents, status: nextStatus, stockRestored: returnsToStock });
     }
 
     if (body.action === "sale_cancel") {

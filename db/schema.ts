@@ -416,6 +416,7 @@ export const sales = sqliteTable("sales", {
   customerName: text("customer_name"),
   status: text("status", { enum: ["PAGADA", "PENDIENTE", "ANULADA", "DEVUELTA"] }).notNull(),
   paymentMethod: text("payment_method", { enum: ["EFECTIVO", "TRANSFERENCIA", "QR", "PENDIENTE", "CORTESIA", "OTRO"] }).notNull(),
+  cashSessionId: integer("cash_session_id"),
   subtotalCents: integer("subtotal_cents").notNull(),
   totalCents: integer("total_cents").notNull(),
   notes: text("notes").notNull().default(""),
@@ -428,6 +429,68 @@ export const sales = sqliteTable("sales", {
   cancelledAt: text("cancelled_at"),
   cancellationReason: text("cancellation_reason"),
 }, (table) => [index("idx_sales_stay_status").on(table.stayId, table.status), index("idx_sales_created_status").on(table.createdAt, table.status)]);
+
+export const cashSessions = sqliteTable("cash_sessions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  status: text("status", { enum: ["ABIERTA", "CERRADA", "PENDIENTE_REVISION", "REVISADA"] }).notNull().default("ABIERTA"),
+  openedByUserId: integer("opened_by_user_id").notNull(),
+  openedByName: text("opened_by_name").notNull(),
+  openedAt: text("opened_at").notNull(),
+  openingCashCents: integer("opening_cash_cents").notNull(),
+  openingNotes: text("opening_notes").notNull().default(""),
+  closedByUserId: integer("closed_by_user_id"),
+  closedByName: text("closed_by_name"),
+  closedAt: text("closed_at"),
+  expectedCashCents: integer("expected_cash_cents"),
+  countedCashCents: integer("counted_cash_cents"),
+  differenceCents: integer("difference_cents"),
+  differenceReason: text("difference_reason"),
+  closingNotes: text("closing_notes"),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+}, (table) => [index("idx_cash_sessions_status_opened").on(table.status, table.openedAt)]);
+
+export const salePayments = sqliteTable("sale_payments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  saleId: integer("sale_id").notNull(),
+  cashSessionId: integer("cash_session_id"),
+  paymentMethod: text("payment_method", { enum: ["EFECTIVO", "TRANSFERENCIA", "QR", "CORTESIA", "OTRO"] }).notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  reference: text("reference").notNull().default(""),
+  receivedByUserId: integer("received_by_user_id").notNull(),
+  receivedByName: text("received_by_name").notNull(),
+  receivedAt: text("received_at").notNull(),
+}, (table) => [index("idx_sale_payments_sale_received").on(table.saleId, table.receivedAt), index("idx_sale_payments_session_method").on(table.cashSessionId, table.paymentMethod)]);
+
+export const saleReturns = sqliteTable("sale_returns", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  saleId: integer("sale_id").notNull(),
+  returnNumber: text("return_number").unique(),
+  reason: text("reason").notNull(),
+  responsible: text("responsible").notNull(),
+  physicalCondition: text("physical_condition", { enum: ["SELLADO", "BUENO", "ABIERTO", "DANADO"] }).notNull(),
+  returnsToStock: integer("returns_to_stock", { mode: "boolean" }).notNull().default(false),
+  refundMethod: text("refund_method", { enum: ["EFECTIVO", "TRANSFERENCIA", "QR", "SALDO", "SIN_REEMBOLSO", "OTRO"] }).notNull(),
+  refundAmountCents: integer("refund_amount_cents").notNull().default(0),
+  cashSessionId: integer("cash_session_id"),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  createdByName: text("created_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_sale_returns_sale_created").on(table.saleId, table.createdAt), index("idx_sale_returns_session_method").on(table.cashSessionId, table.refundMethod)]);
+
+export const saleReturnItems = sqliteTable("sale_return_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  returnId: integer("return_id").notNull(),
+  saleItemId: integer("sale_item_id").notNull(),
+  productId: integer("product_id").notNull(),
+  productName: text("product_name").notNull(),
+  quantity: integer("quantity").notNull(),
+  unitPriceCents: integer("unit_price_cents").notNull(),
+  unitCostCents: integer("unit_cost_cents").notNull(),
+  totalPriceCents: integer("total_price_cents").notNull(),
+}, (table) => [index("idx_sale_return_items_return").on(table.returnId), index("idx_sale_return_items_sale_item").on(table.saleItemId)]);
 
 export const saleItems = sqliteTable("sale_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),

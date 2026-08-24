@@ -432,6 +432,66 @@ test("integra carrito, cargos a estadías y comprobantes reimprimibles", async (
 
 test("bloquea la salida mientras existan consumos pendientes", async () => {
   const route = await readFile(projectFile("app/api/hotel/route.ts"), "utf8");
-  assert.match(route, /FROM sales WHERE stay_id = \? AND status = 'PENDIENTE'/);
+  assert.match(route, /FROM sales sale WHERE sale\.stay_id = \? AND sale\.status = 'PENDIENTE'/);
   assert.match(route, /Resuélvelas en Ventas antes de registrar la salida/);
+});
+
+test("persiste caja compartida, pagos parciales y devoluciones por producto", async () => {
+  const [schema, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("drizzle/0019_cloudy_mikhail_rasputin.sql"), "utf8"),
+  ]);
+  assert.match(schema, /export const cashSessions/);
+  assert.match(schema, /export const salePayments/);
+  assert.match(schema, /export const saleReturns/);
+  assert.match(schema, /export const saleReturnItems/);
+  assert.match(migration, /CREATE TABLE `cash_sessions`/);
+  assert.match(migration, /CREATE TABLE `sale_payments`/);
+  assert.match(migration, /CREATE TABLE `sale_returns`/);
+  assert.match(migration, /Migración de venta pagada existente/);
+});
+
+test("controla apertura, cierre y revisión de diferencias de caja", async () => {
+  const route = await readFile(projectFile("app/api/store/route.ts"), "utf8");
+  assert.match(route, /body\.action === "cash_open"/);
+  assert.match(route, /body\.action === "cash_close"/);
+  assert.match(route, /expectedCashCents = Number\(session\.opening_cash_cents\)/);
+  assert.match(route, /Explica obligatoriamente la diferencia de caja/);
+  assert.match(route, /body\.action === "cash_review"/);
+  assert.match(route, /Solo Administración puede revisar diferencias de caja/);
+  assert.match(route, /Abre la caja de recepción antes de registrar ventas/);
+});
+
+test("registra cobros parciales y actualiza el saldo de la estadía", async () => {
+  const [storeRoute, hotelRoute] = await Promise.all([
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+  ]);
+  assert.match(storeRoute, /body\.action === "sale_payment"/);
+  assert.match(storeRoute, /amountCents > balanceCents/);
+  assert.match(storeRoute, /PAGO_REGISTRADO/);
+  assert.match(storeRoute, /INSERT INTO sale_payments/);
+  assert.match(hotelRoute, /sale_payments payment/);
+  assert.match(hotelRoute, /sale_returns ret/);
+});
+
+test("permite devoluciones parciales y reintegro expreso al stock", async () => {
+  const route = await readFile(projectFile("app/api/store/route.ts"), "utf8");
+  assert.match(route, /body\.action === "sale_return"/);
+  assert.match(route, /Una cantidad devuelta supera lo disponible/);
+  assert.match(route, /Un producto abierto o dañado no puede volver al stock vendible/);
+  assert.match(route, /INSERT INTO sale_return_items/);
+  assert.match(route, /'DEVOLUCION'/);
+  assert.match(route, /returnNumber = `D-/);
+});
+
+test("muestra caja, operaciones y rentabilidad solamente a administración", async () => {
+  const pos = await readFile(projectFile("app/PosView.tsx"), "utf8");
+  assert.match(pos, /Caja compartida abierta/);
+  assert.match(pos, /Cerrar y entregar turno/);
+  assert.match(pos, /Registrar cobro/);
+  assert.match(pos, /Devolver productos/);
+  assert.match(pos, /Regresar al stock vendible de recepción/);
+  assert.match(pos, /isAdmin && <CommercialReports/);
+  assert.match(pos, /Ganancia aproximada/);
 });
