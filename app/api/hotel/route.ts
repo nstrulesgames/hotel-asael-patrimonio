@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 const schemaStatements = [
-  `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, email TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, email TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, invited_by TEXT, activated_at TEXT, last_access_at TEXT, deactivated_at TEXT, deactivated_by TEXT, deactivation_reason TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS user_access_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, performed_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS floors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, position INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS rooms (id INTEGER PRIMARY KEY AUTOINCREMENT, floor_id INTEGER NOT NULL, number TEXT NOT NULL UNIQUE, type TEXT NOT NULL, capacity INTEGER NOT NULL, status TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1)`,
@@ -59,6 +59,9 @@ async function ensureDatabase() {
   const userColumns = await db.prepare("PRAGMA table_info(users)").all<{ name: string }>();
   if (!userColumns.results.some((column) => column.name === "active")) {
     await db.prepare("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1").run();
+  }
+  for (const [column, definition] of [["invited_by", "TEXT"], ["activated_at", "TEXT"], ["last_access_at", "TEXT"], ["deactivated_at", "TEXT"], ["deactivated_by", "TEXT"], ["deactivation_reason", "TEXT"]] as const) {
+    if (!userColumns.results.some((item) => item.name === column)) await db.prepare(`ALTER TABLE users ADD COLUMN ${column} ${definition}`).run();
   }
   const floorColumns = await db.prepare("PRAGMA table_info(floors)").all<{ name: string }>();
   if (!floorColumns.results.some((column) => column.name === "active")) {
@@ -163,20 +166,27 @@ function currentUser(request: Request) {
 
 async function ensureUser(request: Request) {
   const user = currentUser(request);
-  const existing = await env.DB.prepare("SELECT id, name, email, role, active FROM users WHERE external_id = ?").bind(user.externalId).first<{ id: number; name: string; email: string; role: string; active: number }>();
+  const now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT id, name, email, role, active, last_access_at FROM users WHERE external_id = ?").bind(user.externalId).first<{ id: number; name: string; email: string; role: string; active: number; last_access_at?: string }>();
   if (existing && !existing.active) throw new Error("DEACTIVATED");
-  if (existing) return existing;
+  if (existing) {
+    const shouldLogSession = !existing.last_access_at || Date.now() - new Date(existing.last_access_at).getTime() >= 8 * 60 * 60 * 1000;
+    const statements = [env.DB.prepare("UPDATE users SET last_access_at = ? WHERE id = ?").bind(now, existing.id)];
+    if (shouldLogSession) statements.push(env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'SESION_INICIADA', 'Acceso verificado mediante correo autorizado', ?, ?)").bind(existing.id, existing.name, now));
+    await env.DB.batch(statements);
+    return { ...existing, last_access_at: now };
+  }
   const invited = await env.DB.prepare("SELECT id, name, email, role, active, external_id FROM users WHERE lower(email) = lower(?)").bind(user.email.trim()).first<{ id: number; name: string; email: string; role: string; active: number; external_id: string }>();
   if (invited && !invited.active) throw new Error("DEACTIVATED");
   if (invited && invited.external_id.startsWith("pending:")) {
-    await env.DB.prepare("UPDATE users SET external_id = ?, name = CASE WHEN name = '' THEN ? ELSE name END WHERE id = ?").bind(user.externalId, user.name, invited.id).run();
+    await env.DB.prepare("UPDATE users SET external_id = ?, name = CASE WHEN name = '' THEN ? ELSE name END, activated_at = ?, last_access_at = ?, deactivated_at = NULL, deactivated_by = NULL, deactivation_reason = NULL WHERE id = ?").bind(user.externalId, user.name, now, now, invited.id).run();
     await env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'PRIMER_ACCESO', 'Correo verificado al iniciar sesión', ?, ?)").bind(invited.id, user.name, new Date().toISOString()).run();
     return env.DB.prepare("SELECT id, name, email, role, active FROM users WHERE id = ?").bind(invited.id).first();
   }
   const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM users").first<{ total: number }>();
   if (count?.total) throw new Error("NOT_AUTHORIZED");
   const role = "PROPIETARIO";
-  await env.DB.prepare("INSERT INTO users (external_id, email, name, role, active, created_at) VALUES (?, ?, ?, ?, 1, ?)").bind(user.externalId, user.email, user.name, role, new Date().toISOString()).run();
+  await env.DB.prepare("INSERT INTO users (external_id, email, name, role, active, activated_at, last_access_at, created_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)").bind(user.externalId, user.email, user.name, role, now, now, now).run();
   return env.DB.prepare("SELECT id, name, email, role, active FROM users WHERE external_id = ?").bind(user.externalId).first();
 }
 
@@ -214,7 +224,7 @@ export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, exceptionalExitRequests, auditFeed] = await Promise.all([
+  const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, accessEvents, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, exceptionalExitRequests, auditFeed] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id AND sg.left_at IS NULL) AS guest_count,
@@ -230,7 +240,11 @@ export async function GET(request: Request) {
     env.DB.prepare("SELECT * FROM inventory_movements ORDER BY created_at DESC").all(),
     env.DB.prepare("SELECT * FROM inspections ORDER BY created_at DESC").all(),
     env.DB.prepare("SELECT * FROM inspection_items ORDER BY id").all(),
-    env.DB.prepare("SELECT id, name, email, role, active, created_at FROM users ORDER BY active DESC, name").all(),
+    env.DB.prepare(`SELECT id, name, CASE WHEN ? = 'RECEPCION' THEN '' ELSE email END AS email, role, active, created_at, activated_at, last_access_at, deactivated_at, deactivated_by, deactivation_reason,
+      CASE WHEN external_id LIKE 'pending:%' THEN 'PENDIENTE' WHEN active = 0 THEN 'DESACTIVADO' ELSE 'ACTIVO' END AS access_status
+      FROM users WHERE ? != 'RECEPCION' OR active = 1 ORDER BY active DESC, name`).bind(user?.role || "RECEPCION", user?.role || "RECEPCION").all(),
+    user?.role === "RECEPCION" ? Promise.resolve({ results: [] }) : env.DB.prepare(`SELECT ua.id, ua.user_id, ua.action, ua.reason, ua.performed_by, ua.created_at, u.name AS user_name, u.email AS user_email
+      FROM user_access_events ua JOIN users u ON u.id = ua.user_id ORDER BY ua.created_at DESC LIMIT 250`).all(),
     env.DB.prepare("SELECT id, room_id, stay_id, segment_id, work_order_id, inventory_movement_id, phase, category, description, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
     env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, NULL AS work_order_id, seg.started_at AS created_at, CAST(julianday('now') - julianday(seg.started_at) AS INTEGER) AS days_overdue
       FROM stays s JOIN rooms r ON r.id = s.room_id JOIN stay_room_segments seg ON seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL
@@ -292,7 +306,7 @@ export async function GET(request: Request) {
       WHERE ? != 'RECEPCION' OR request.requested_by_user_id = ? ORDER BY request.requested_at DESC`).bind(user?.role || "RECEPCION", user?.id || 0).all(),
     loadAuditFeed(user?.role || "RECEPCION"),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, infrastructure: infrastructure.results, inventoryMovements: inventoryMovements.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, exceptionalExitRequests: exceptionalExitRequests.results, auditFeed: auditFeed.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, infrastructure: infrastructure.results, inventoryMovements: inventoryMovements.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, accessEvents: accessEvents.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, exceptionalExitRequests: exceptionalExitRequests.results, auditFeed: auditFeed.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -1121,12 +1135,15 @@ export async function POST(request: Request) {
     const email = String(body.email || "").trim().toLowerCase();
     const name = String(body.name || "").trim();
     const role = ["PROPIETARIO", "ADMINISTRADOR", "RECEPCION"].includes(String(body.role)) ? String(body.role) : "RECEPCION";
-    if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Response.json({ error: "Indica un nombre y correo válidos." }, { status: 400 });
-    const duplicate = await env.DB.prepare("SELECT id FROM users WHERE lower(email) = lower(?)").bind(email).first();
-    if (duplicate) return Response.json({ error: "Ese correo ya está registrado." }, { status: 409 });
-    const result = await env.DB.prepare("INSERT INTO users (external_id, email, name, role, active, created_at) VALUES (?, ?, ?, ?, 1, ?)").bind(`pending:${email}`, email, name, role, now).run();
+    const reason = String(body.reason || "").trim();
+    if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !reason) return Response.json({ error: "Indica nombre, correo y motivo válidos." }, { status: 400 });
+    if (role === "PROPIETARIO" && user?.role !== "PROPIETARIO") return Response.json({ error: "Solo un propietario puede autorizar a otro propietario." }, { status: 403 });
+    const duplicate = await env.DB.prepare("SELECT id, active FROM users WHERE lower(email) = lower(?)").bind(email).first<{ id: number; active: number }>();
+    if (duplicate) return Response.json({ error: duplicate.active ? "Ese correo ya está registrado." : "Ese correo pertenece a un trabajador desactivado. Reactívalo desde la lista." }, { status: 409 });
+    const result = await env.DB.prepare("INSERT INTO users (external_id, email, name, role, active, invited_by, created_at) VALUES (?, ?, ?, ?, 1, ?, ?)").bind(`pending:${email}`, email, name, role, user?.name || "Administración", now).run();
     const targetId = Number(result.meta.last_row_id);
-    await env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'ACCESO_CREADO', ?, ?, ?)").bind(targetId, String(body.reason || "Alta de trabajador"), user?.name || "Administración", now).run();
+    await env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'INVITACION_CREADA', ?, ?, ?)").bind(targetId, reason, user?.name || "Administración", now).run();
+    await logAudit(request, user, { action: "TRABAJADOR_INVITADO", entityType: "USER", entityId: targetId, newValue: { email, role, status: "PENDIENTE" }, reason }, now);
     return Response.json({ ok: true, userId: targetId });
   }
 
@@ -1134,19 +1151,34 @@ export async function POST(request: Request) {
     if (user?.role !== "PROPIETARIO" && user?.role !== "ADMINISTRADOR") return Response.json({ error: "No tienes permiso para administrar personal." }, { status: 403 });
     const targetId = Number(body.userId);
     if (!targetId) return Response.json({ error: "Trabajador inválido." }, { status: 400 });
-    if (targetId === user?.id && body.active === false) return Response.json({ error: "No puedes desactivar tu propio acceso." }, { status: 400 });
+    if (targetId === user?.id) return Response.json({ error: "Tu propio rol y acceso deben ser administrados por otro propietario." }, { status: 400 });
     const role = ["PROPIETARIO", "ADMINISTRADOR", "RECEPCION"].includes(String(body.role)) ? body.role : "RECEPCION";
-    const current = await env.DB.prepare("SELECT role, active FROM users WHERE id = ?").bind(targetId).first<{ role: string; active: number }>();
+    const current = await env.DB.prepare("SELECT name, email, role, active FROM users WHERE id = ?").bind(targetId).first<{ name: string; email: string; role: string; active: number }>();
     if (!current) return Response.json({ error: "Trabajador inexistente." }, { status: 404 });
+    if ((current.role === "PROPIETARIO" || role === "PROPIETARIO") && user?.role !== "PROPIETARIO") return Response.json({ error: "Solo un propietario puede modificar cuentas de propietario." }, { status: 403 });
     const active = body.active === false ? 0 : 1;
     const changedRole = current.role !== role;
     const changedAccess = current.active !== active;
     const reason = String(body.reason || "").trim();
-    if ((changedRole || (changedAccess && !active)) && !reason) return Response.json({ error: "Indica el motivo del cambio." }, { status: 400 });
-    await env.DB.prepare("UPDATE users SET role = ?, active = ? WHERE id = ?").bind(role, body.active === false ? 0 : 1, targetId).run();
-    if (changedRole) await env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'ROL_MODIFICADO', ?, ?, ?)").bind(targetId, reason, user?.name || "Administración", now).run();
-    if (changedAccess) await env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, ?, ?, ?, ?)").bind(targetId, active ? "ACCESO_REACTIVADO" : "ACCESO_DESACTIVADO", reason || "Reactivación administrativa", user?.name || "Administración", now).run();
-    return Response.json({ ok: true });
+    if (!changedRole && !changedAccess) return Response.json({ error: "No hay cambios para guardar." }, { status: 400 });
+    if (!reason) return Response.json({ error: "Indica el motivo del cambio." }, { status: 400 });
+    if (current.role === "PROPIETARIO" && (!active || role !== "PROPIETARIO")) {
+      const owners = await env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'PROPIETARIO' AND active = 1").first<{ total: number }>();
+      if ((owners?.total || 0) <= 1) return Response.json({ error: "Debe permanecer al menos un propietario activo." }, { status: 409 });
+    }
+    const openAssignments = !active ? await env.DB.prepare("SELECT id, status FROM work_orders WHERE assigned_user_id = ? AND status IN ('PENDIENTE', 'EN_PROCESO')").bind(targetId).all<{ id: number; status: string }>() : { results: [] };
+    const statements = [
+      env.DB.prepare("UPDATE users SET role = ?, active = ?, deactivated_at = ?, deactivated_by = ?, deactivation_reason = ? WHERE id = ?").bind(role, active, active ? null : now, active ? null : user?.name || "Administración", active ? null : reason, targetId),
+    ];
+    if (changedRole) statements.push(env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'ROL_MODIFICADO', ?, ?, ?)").bind(targetId, reason, user?.name || "Administración", now));
+    if (changedAccess) statements.push(env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, ?, ?, ?, ?)").bind(targetId, active ? "ACCESO_REACTIVADO" : "ACCESO_DESACTIVADO", reason, user?.name || "Administración", now));
+    if (!active && openAssignments.results.length) {
+      statements.push(env.DB.prepare("UPDATE work_orders SET assigned_user_id = NULL WHERE assigned_user_id = ? AND status IN ('PENDIENTE', 'EN_PROCESO')").bind(targetId));
+      for (const order of openAssignments.results) statements.push(env.DB.prepare("INSERT INTO work_order_history (work_order_id, action, from_status, to_status, detail, performed_by, created_at) VALUES (?, 'RESPONSABLE_LIBERADO', ?, ?, ?, ?, ?)").bind(order.id, order.status, order.status, `Baja de ${current.name}: ${reason}`, user?.name || "Administración", now));
+    }
+    await env.DB.batch(statements);
+    await logAudit(request, user, { action: changedAccess ? (active ? "TRABAJADOR_REACTIVADO" : "TRABAJADOR_DESACTIVADO") : "ROL_TRABAJADOR_MODIFICADO", entityType: "USER", entityId: targetId, oldValue: { role: current.role, active: Boolean(current.active) }, newValue: { role, active: Boolean(active), releasedTasks: openAssignments.results.length }, reason }, now);
+    return Response.json({ ok: true, releasedTasks: openAssignments.results.length });
   }
 
   return Response.json({ error: "Acción desconocida." }, { status: 400 });

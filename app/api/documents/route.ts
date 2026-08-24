@@ -13,7 +13,12 @@ async function authorizedUser(request: Request) {
   if (!externalId) return null;
   const user = await env.DB.prepare("SELECT id, name, active, external_id FROM users WHERE external_id = ? OR lower(email) = lower(?) LIMIT 1").bind(externalId, email).first<{ id: number; name: string; active: number; external_id: string }>();
   if (!user?.active) return null;
-  if (user.external_id.startsWith("pending:")) await env.DB.prepare("UPDATE users SET external_id = ? WHERE id = ?").bind(externalId, user.id).run();
+  const now = new Date().toISOString();
+  if (user.external_id.startsWith("pending:")) await env.DB.batch([
+    env.DB.prepare("UPDATE users SET external_id = ?, activated_at = ?, last_access_at = ? WHERE id = ?").bind(externalId, now, now, user.id),
+    env.DB.prepare("INSERT INTO user_access_events (user_id, action, reason, performed_by, created_at) VALUES (?, 'PRIMER_ACCESO', 'Correo verificado al guardar o consultar documentos', ?, ?)").bind(user.id, user.name, now),
+  ]);
+  else await env.DB.prepare("UPDATE users SET last_access_at = ? WHERE id = ?").bind(now, user.id).run();
   return user;
 }
 

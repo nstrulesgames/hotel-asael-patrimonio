@@ -7,6 +7,12 @@ export const users = sqliteTable("users", {
   name: text("name").notNull(),
   role: text("role", { enum: ["PROPIETARIO", "ADMINISTRADOR", "RECEPCION"] }).notNull(),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
+  invitedBy: text("invited_by"),
+  activatedAt: text("activated_at"),
+  lastAccessAt: text("last_access_at"),
+  deactivatedAt: text("deactivated_at"),
+  deactivatedBy: text("deactivated_by"),
+  deactivationReason: text("deactivation_reason"),
   createdAt: text("created_at").notNull(),
 });
 

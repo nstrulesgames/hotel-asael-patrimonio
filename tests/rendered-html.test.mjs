@@ -225,3 +225,39 @@ test("reabre una estadía cerrada solamente antes de iniciar la limpieza", async
   assert.match(route, /REAPERTURA:/);
   assert.match(route, /ESTADIA_REABIERTA/);
 });
+
+test("gestiona el ciclo completo del trabajador mediante correo autorizado", async () => {
+  const [schema, route, documents, dashboard, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/api/documents/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0015_bent_mister_sinister.sql"), "utf8"),
+  ]);
+  assert.match(schema, /lastAccessAt/);
+  assert.match(schema, /deactivationReason/);
+  assert.match(migration, /ALTER TABLE `users` ADD `last_access_at`/);
+  assert.match(migration, /ALTER TABLE `users` ADD `deactivation_reason`/);
+  assert.match(route, /INVITACION_CREADA/);
+  assert.match(route, /PRIMER_ACCESO/);
+  assert.match(route, /SESION_INICIADA/);
+  assert.match(route, /8 \* 60 \* 60 \* 1000/);
+  assert.match(documents, /activated_at = \?, last_access_at = \?/);
+  assert.match(dashboard, /function StaffAccessPanel/);
+  assert.match(dashboard, /Historial reciente de accesos/);
+});
+
+test("protege propietarios y libera tareas al desactivar trabajadores", async () => {
+  const [route, dashboard] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+  ]);
+  assert.match(route, /Solo un propietario puede autorizar a otro propietario/);
+  assert.match(route, /Debe permanecer al menos un propietario activo/);
+  assert.match(route, /Tu propio rol y acceso deben ser administrados por otro propietario/);
+  assert.match(route, /UPDATE work_orders SET assigned_user_id = NULL/);
+  assert.match(route, /RESPONSABLE_LIBERADO/);
+  assert.match(route, /CASE WHEN \? = 'RECEPCION' THEN '' ELSE email END/);
+  assert.match(dashboard, /data\.user\.role !== "RECEPCION" && <button className=\{view === "configuracion"/);
+  assert.match(dashboard, /Permisos efectivos/);
+});
