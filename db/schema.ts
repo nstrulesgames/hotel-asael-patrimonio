@@ -390,7 +390,7 @@ export const stockMovements = sqliteTable("stock_movements", {
   productId: integer("product_id").notNull(),
   fromLocationId: integer("from_location_id"),
   toLocationId: integer("to_location_id"),
-  movementType: text("movement_type", { enum: ["ENTRADA", "TRANSFERENCIA", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO", "VENCIMIENTO", "DEVOLUCION"] }).notNull(),
+  movementType: text("movement_type", { enum: ["ENTRADA", "TRANSFERENCIA", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO", "VENCIMIENTO", "DEVOLUCION", "VENTA"] }).notNull(),
   quantity: integer("quantity").notNull(),
   totalCostCents: integer("total_cost_cents").notNull().default(0),
   reason: text("reason").notNull(),
@@ -398,3 +398,55 @@ export const stockMovements = sqliteTable("stock_movements", {
   createdBy: text("created_by").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_stock_movements_product_created").on(table.productId, table.createdAt), index("idx_stock_movements_locations_created").on(table.fromLocationId, table.toLocationId, table.createdAt)]);
+
+export const commercialSequences = sqliteTable("commercial_sequences", {
+  year: integer("year").primaryKey(),
+  nextValue: integer("next_value").notNull().default(1),
+});
+
+export const sales = sqliteTable("sales", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  saleNumber: text("sale_number").notNull().unique(),
+  saleYear: integer("sale_year").notNull(),
+  sequence: integer("sequence").notNull(),
+  saleType: text("sale_type", { enum: ["HUESPED", "DIRECTA"] }).notNull(),
+  stayId: integer("stay_id"),
+  roomId: integer("room_id"),
+  consumerGuestId: integer("consumer_guest_id"),
+  customerName: text("customer_name"),
+  status: text("status", { enum: ["PAGADA", "PENDIENTE", "ANULADA", "DEVUELTA"] }).notNull(),
+  paymentMethod: text("payment_method", { enum: ["EFECTIVO", "TRANSFERENCIA", "QR", "PENDIENTE", "CORTESIA", "OTRO"] }).notNull(),
+  subtotalCents: integer("subtotal_cents").notNull(),
+  totalCents: integer("total_cents").notNull(),
+  notes: text("notes").notNull().default(""),
+  printCount: integer("print_count").notNull().default(0),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  createdByName: text("created_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+  cancelledByUserId: integer("cancelled_by_user_id"),
+  cancelledByName: text("cancelled_by_name"),
+  cancelledAt: text("cancelled_at"),
+  cancellationReason: text("cancellation_reason"),
+}, (table) => [index("idx_sales_stay_status").on(table.stayId, table.status), index("idx_sales_created_status").on(table.createdAt, table.status)]);
+
+export const saleItems = sqliteTable("sale_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  saleId: integer("sale_id").notNull(),
+  productId: integer("product_id").notNull(),
+  productName: text("product_name").notNull(),
+  productSku: text("product_sku").notNull(),
+  quantity: integer("quantity").notNull(),
+  unitPriceCents: integer("unit_price_cents").notNull(),
+  unitCostCents: integer("unit_cost_cents").notNull(),
+  totalPriceCents: integer("total_price_cents").notNull(),
+  totalCostCents: integer("total_cost_cents").notNull(),
+}, (table) => [index("idx_sale_items_sale").on(table.saleId)]);
+
+export const saleStockAllocations = sqliteTable("sale_stock_allocations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  saleId: integer("sale_id").notNull(),
+  productId: integer("product_id").notNull(),
+  batchId: integer("batch_id").notNull(),
+  quantity: integer("quantity").notNull(),
+  unitCostCents: integer("unit_cost_cents").notNull(),
+}, (table) => [index("idx_sale_allocations_sale").on(table.saleId), index("idx_sale_allocations_batch").on(table.batchId)]);

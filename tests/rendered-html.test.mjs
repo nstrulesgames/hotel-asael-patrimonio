@@ -385,3 +385,53 @@ test("integra la pantalla de almacén con catálogo, ingresos y transferencias",
   assert.match(store, /Stock mínimo/);
   assert.match(store, /Vencimientos ≤ 30 días/);
 });
+
+test("persiste ventas, detalles, asignaciones de lotes y numeración anual", async () => {
+  const [schema, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("drizzle/0018_petite_weapon_omega.sql"), "utf8"),
+  ]);
+  assert.match(schema, /export const sales/);
+  assert.match(schema, /export const saleItems/);
+  assert.match(schema, /export const saleStockAllocations/);
+  assert.match(schema, /export const commercialSequences/);
+  assert.match(migration, /CREATE TABLE `sales`/);
+  assert.match(migration, /CREATE TABLE `sale_items`/);
+  assert.match(migration, /idx_sales_stay_status/);
+  assert.match(migration, /idx_sale_allocations_batch/);
+});
+
+test("aplica las reglas del POS sobre stock, pendientes, cortesías y anulaciones", async () => {
+  const route = await readFile(projectFile("app/api/store/route.ts"), "utf8");
+  assert.match(route, /body\.action === "sale_create"/);
+  assert.match(route, /code = 'RECEPTION'/);
+  assert.match(route, /date\(expires_on\) >= date\('now'\)/);
+  assert.match(route, /ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END/);
+  assert.match(route, /pendingLimitCents = 20000/);
+  assert.match(route, /La cortesía requiere autorización de Administración/);
+  assert.match(route, /movement_type, quantity[\s\S]*'VENTA'/);
+  assert.match(route, /stockRestored: false/);
+});
+
+test("integra carrito, cargos a estadías y comprobantes reimprimibles", async () => {
+  const [dashboard, pos, route] = await Promise.all([
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("app/PosView.tsx"), "utf8"),
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+  ]);
+  assert.match(dashboard, /<PosView \/>/);
+  assert.match(dashboard, /> Ventas<\/button>/);
+  assert.match(pos, /Cargo a huésped/);
+  assert.match(pos, /Venta directa/);
+  assert.match(pos, /Confirmar venta/);
+  assert.match(pos, /Cargo pendiente/);
+  assert.match(pos, /Imprimir comprobante/);
+  assert.match(route, /COMPROBANTE_REIMPRESO/);
+  assert.match(route, /Comprobante interno de venta/);
+});
+
+test("bloquea la salida mientras existan consumos pendientes", async () => {
+  const route = await readFile(projectFile("app/api/hotel/route.ts"), "utf8");
+  assert.match(route, /FROM sales WHERE stay_id = \? AND status = 'PENDIENTE'/);
+  assert.match(route, /Resuélvelas en Ventas antes de registrar la salida/);
+});
