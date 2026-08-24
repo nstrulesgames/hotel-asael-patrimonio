@@ -13,7 +13,8 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS exit_assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, delivery_inspection_id INTEGER NOT NULL, return_inspection_id INTEGER NOT NULL, work_order_id INTEGER, issue_count INTEGER NOT NULL DEFAULT 0, missing_count INTEGER NOT NULL DEFAULT 0, observed_count INTEGER NOT NULL DEFAULT 0, discrepancies TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, submitted_by_user_id INTEGER NOT NULL, submitted_by_name TEXT NOT NULL, submitted_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT)`,
   `CREATE TABLE IF NOT EXISTS exceptional_exit_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, reason TEXT NOT NULL, witnesses TEXT NOT NULL DEFAULT '', photo_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, requested_by_user_id INTEGER NOT NULL, requested_by_name TEXT NOT NULL, requested_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT)`,
   `CREATE TABLE IF NOT EXISTS room_events (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, work_order_id INTEGER, inventory_movement_id INTEGER, phase TEXT NOT NULL DEFAULT 'GENERAL', category TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL, object_key TEXT NOT NULL, content_type TEXT NOT NULL, uploaded_by TEXT NOT NULL DEFAULT 'Hotel ASAEL', created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS contracts (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, primary_guest_id INTEGER NOT NULL, initial_room_id INTEGER NOT NULL, parent_contract_id INTEGER, contract_number TEXT NOT NULL, contract_type TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT, status TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL, ended_by TEXT, ended_at TEXT, end_reason TEXT)`,
+  `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, work_order_id INTEGER, inventory_movement_id INTEGER, contract_id INTEGER, phase TEXT NOT NULL DEFAULT 'GENERAL', category TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL, object_key TEXT NOT NULL, content_type TEXT NOT NULL, uploaded_by TEXT NOT NULL DEFAULT 'Hotel ASAEL', created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, item_type TEXT NOT NULL DEFAULT 'PERMANENTE', notes TEXT NOT NULL DEFAULT '')`,
   `CREATE TABLE IF NOT EXISTS room_infrastructure_items (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, area TEXT NOT NULL, name TEXT NOT NULL, evidence_category TEXT NOT NULL, required_evidence INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, notes TEXT NOT NULL DEFAULT '')`,
   `CREATE TABLE IF NOT EXISTS inventory_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, inventory_item_id INTEGER, item_name TEXT NOT NULL, quantity INTEGER NOT NULL, movement_type TEXT NOT NULL, reason TEXT NOT NULL, responsible TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
@@ -28,6 +29,8 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_stays_room_status ON stays(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_events_room_created ON room_events(room_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_documents_stay_id ON documents(stay_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_contracts_stay_status ON contracts(stay_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_contracts_end_status ON contracts(end_date, status)`,
   `CREATE INDEX IF NOT EXISTS idx_inventory_room_id ON inventory_items(room_id)`,
   `CREATE INDEX IF NOT EXISTS idx_room_infrastructure_room_active ON room_infrastructure_items(room_id, active)`,
   `CREATE INDEX IF NOT EXISTS idx_inventory_movements_segment_created ON inventory_movements(segment_id, created_at)`,
@@ -84,6 +87,7 @@ async function ensureDatabase() {
   if (!documentColumns.results.some((column) => column.name === "segment_id")) await db.prepare("ALTER TABLE documents ADD COLUMN segment_id INTEGER").run();
   if (!documentColumns.results.some((column) => column.name === "work_order_id")) await db.prepare("ALTER TABLE documents ADD COLUMN work_order_id INTEGER").run();
   if (!documentColumns.results.some((column) => column.name === "inventory_movement_id")) await db.prepare("ALTER TABLE documents ADD COLUMN inventory_movement_id INTEGER").run();
+  if (!documentColumns.results.some((column) => column.name === "contract_id")) await db.prepare("ALTER TABLE documents ADD COLUMN contract_id INTEGER").run();
   if (!documentColumns.results.some((column) => column.name === "description")) await db.prepare("ALTER TABLE documents ADD COLUMN description TEXT NOT NULL DEFAULT ''").run();
   const inventoryColumns = await db.prepare("PRAGMA table_info(inventory_items)").all<{ name: string }>();
   if (!inventoryColumns.results.some((column) => column.name === "item_type")) await db.prepare("ALTER TABLE inventory_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'PERMANENTE'").run();
@@ -102,6 +106,7 @@ async function ensureDatabase() {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_inspections_segment_kind ON inspections(segment_id, kind)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_work_order_id ON documents(work_order_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_inventory_movement_id ON documents(inventory_movement_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_contract_id ON documents(contract_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_stay_guests_stay_active ON stay_guests(stay_id, left_at)"),
   ]);
   await db.prepare(`INSERT INTO stay_room_segments (stay_id, room_id, sequence, started_at, ended_at, start_reason, end_reason, created_by, ended_by)
@@ -224,7 +229,7 @@ export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, accessEvents, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, exceptionalExitRequests, auditFeed] = await Promise.all([
+  const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, accessEvents, contracts, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, exceptionalExitRequests, auditFeed] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id AND sg.left_at IS NULL) AS guest_count,
@@ -245,7 +250,10 @@ export async function GET(request: Request) {
       FROM users WHERE ? != 'RECEPCION' OR active = 1 ORDER BY active DESC, name`).bind(user?.role || "RECEPCION", user?.role || "RECEPCION").all(),
     user?.role === "RECEPCION" ? Promise.resolve({ results: [] }) : env.DB.prepare(`SELECT ua.id, ua.user_id, ua.action, ua.reason, ua.performed_by, ua.created_at, u.name AS user_name, u.email AS user_email
       FROM user_access_events ua JOIN users u ON u.id = ua.user_id ORDER BY ua.created_at DESC LIMIT 250`).all(),
-    env.DB.prepare("SELECT id, room_id, stay_id, segment_id, work_order_id, inventory_movement_id, phase, category, description, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
+    env.DB.prepare(`SELECT c.*, g.full_name AS guest_name, r.number AS room_number,
+      (SELECT COUNT(*) FROM documents d WHERE d.contract_id = c.id AND d.category = 'CONTRATO') AS document_count
+      FROM contracts c JOIN guests g ON g.id = c.primary_guest_id JOIN rooms r ON r.id = c.initial_room_id ORDER BY c.created_at DESC`).all(),
+    env.DB.prepare("SELECT id, room_id, stay_id, segment_id, work_order_id, inventory_movement_id, contract_id, phase, category, description, filename, content_type, uploaded_by, created_at FROM documents ORDER BY created_at DESC").all(),
     env.DB.prepare(`SELECT 'ACTA_ENTREGA_VENCIDA' AS type, r.id AS room_id, r.number AS room_number, s.id AS stay_id, NULL AS work_order_id, seg.started_at AS created_at, CAST(julianday('now') - julianday(seg.started_at) AS INTEGER) AS days_overdue
       FROM stays s JOIN rooms r ON r.id = s.room_id JOIN stay_room_segments seg ON seg.stay_id = s.id AND seg.room_id = r.id AND seg.ended_at IS NULL
       WHERE s.status = 'ACTIVA' AND julianday('now') - julianday(seg.started_at) >= 1
@@ -261,7 +269,17 @@ export async function GET(request: Request) {
         r.id, r.number, w.stay_id, w.id, w.due_at,
         CASE WHEN datetime(w.due_at) < datetime('now') THEN CAST(julianday('now') - julianday(w.due_at) AS INTEGER) ELSE 0 END
       FROM work_orders w JOIN rooms r ON r.id = w.room_id
-      WHERE w.status IN ('PENDIENTE', 'EN_PROCESO') AND w.due_at IS NOT NULL AND datetime(w.due_at) <= datetime('now', '+1 day')`).all(),
+      WHERE w.status IN ('PENDIENTE', 'EN_PROCESO') AND w.due_at IS NOT NULL AND datetime(w.due_at) <= datetime('now', '+1 day')
+      UNION ALL
+      SELECT 'CONTRATO_SIN_RESPALDO', s.room_id, r.number, c.stay_id, NULL, c.created_at, 0
+      FROM contracts c JOIN stays s ON s.id = c.stay_id JOIN rooms r ON r.id = s.room_id
+      WHERE c.status = 'PENDIENTE_DOCUMENTO'
+      UNION ALL
+      SELECT CASE WHEN date(c.end_date) < date('now') THEN 'CONTRATO_VENCIDO' ELSE 'CONTRATO_POR_VENCER' END,
+        s.room_id, r.number, c.stay_id, NULL, c.end_date,
+        CASE WHEN date(c.end_date) < date('now') THEN CAST(julianday('now') - julianday(c.end_date) AS INTEGER) ELSE 0 END
+      FROM contracts c JOIN stays s ON s.id = c.stay_id JOIN rooms r ON r.id = s.room_id
+      WHERE c.status = 'VIGENTE' AND c.end_date IS NOT NULL AND date(c.end_date) <= date('now', '+7 days')`).all(),
     env.DB.prepare(`SELECT seg.*, r.number AS room_number,
       (SELECT COUNT(*) FROM documents d WHERE d.segment_id = seg.id) AS document_count,
       (SELECT COUNT(*) FROM inspections i WHERE i.segment_id = seg.id AND i.kind = 'ENTREGA') AS delivery_count,
@@ -306,7 +324,7 @@ export async function GET(request: Request) {
       WHERE ? != 'RECEPCION' OR request.requested_by_user_id = ? ORDER BY request.requested_at DESC`).bind(user?.role || "RECEPCION", user?.id || 0).all(),
     loadAuditFeed(user?.role || "RECEPCION"),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, infrastructure: infrastructure.results, inventoryMovements: inventoryMovements.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, accessEvents: accessEvents.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, exceptionalExitRequests: exceptionalExitRequests.results, auditFeed: auditFeed.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, infrastructure: infrastructure.results, inventoryMovements: inventoryMovements.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, accessEvents: accessEvents.results, contracts: contracts.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, exceptionalExitRequests: exceptionalExitRequests.results, auditFeed: auditFeed.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -393,6 +411,62 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   const roomId = Number(body.roomId);
   const canConfigure = user?.role === "PROPIETARIO" || user?.role === "ADMINISTRADOR";
+
+  if (body.action === "contract_create") {
+    const stay = await env.DB.prepare("SELECT id, primary_guest_id, status FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number; primary_guest_id: number; status: string }>();
+    if (!stay) return Response.json({ error: "No existe una estadía activa para registrar el contrato." }, { status: 409 });
+    const existing = await env.DB.prepare("SELECT id FROM contracts WHERE stay_id = ? AND status IN ('PENDIENTE_DOCUMENTO', 'VIGENTE') LIMIT 1").bind(stay.id).first();
+    if (existing) return Response.json({ error: "La estadía ya tiene un contrato pendiente o vigente." }, { status: 409 });
+    const contractType = ["ARRENDAMIENTO", "ALOJAMIENTO", "OTRO"].includes(String(body.contractType)) ? String(body.contractType) : "ARRENDAMIENTO";
+    const startDate = String(body.startDate || "").trim();
+    const endDate = String(body.endDate || "").trim() || null;
+    const notes = String(body.notes || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || (endDate && (!/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate))) return Response.json({ error: "Indica fechas contractuales válidas." }, { status: 400 });
+    const provisional = String(body.contractNumber || "").trim() || "PENDIENTE";
+    const result = await env.DB.prepare("INSERT INTO contracts (stay_id, primary_guest_id, initial_room_id, contract_number, contract_type, start_date, end_date, status, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE_DOCUMENTO', ?, ?, ?)").bind(stay.id, stay.primary_guest_id, roomId, provisional, contractType, startDate, endDate, notes, user?.name || "Recepción", now).run();
+    const contractId = Number(result.meta.last_row_id);
+    const contractNumber = provisional === "PENDIENTE" ? `ASAEL-${startDate.slice(0, 4)}-${String(contractId).padStart(4, "0")}` : provisional;
+    if (contractNumber !== provisional) await env.DB.prepare("UPDATE contracts SET contract_number = ? WHERE id = ?").bind(contractNumber, contractId).run();
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'CONTRATO', 'Contrato registrado', ?, 'PENDIENTE', ?, ?)").bind(roomId, stay.id, `${contractNumber} · Falta cargar el respaldo firmado`, user?.name || "Recepción", now).run();
+    await logAudit(request, user, { action: "CONTRATO_CREADO", entityType: "CONTRACT", entityId: contractId, roomId, newValue: { contractNumber, contractType, startDate, endDate, status: "PENDIENTE_DOCUMENTO" }, reason: notes || "Registro contractual" }, now);
+    return Response.json({ ok: true, contractId, contractNumber });
+  }
+
+  if (body.action === "contract_renew") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede renovar contratos." }, { status: 403 });
+    const contractId = Number(body.contractId);
+    const current = await env.DB.prepare("SELECT * FROM contracts WHERE id = ? AND status = 'VIGENTE'").bind(contractId).first<{ id: number; stay_id: number; primary_guest_id: number; initial_room_id: number; contract_type: string; contract_number: string }>();
+    if (!current) return Response.json({ error: "El contrato no está vigente o ya fue renovado." }, { status: 409 });
+    const startDate = String(body.startDate || "").trim();
+    const endDate = String(body.endDate || "").trim() || null;
+    const reason = String(body.reason || "").trim();
+    if (!reason || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || (endDate && endDate < startDate)) return Response.json({ error: "Indica fechas y motivo de renovación válidos." }, { status: 400 });
+    const result = await env.DB.prepare("INSERT INTO contracts (stay_id, primary_guest_id, initial_room_id, parent_contract_id, contract_number, contract_type, start_date, end_date, status, notes, created_by, created_at) VALUES (?, ?, ?, ?, 'PENDIENTE', ?, ?, ?, 'PENDIENTE_DOCUMENTO', ?, ?, ?)").bind(current.stay_id, current.primary_guest_id, roomId || current.initial_room_id, current.id, current.contract_type, startDate, endDate, reason, user?.name || "Administración", now).run();
+    const newId = Number(result.meta.last_row_id);
+    const contractNumber = `ASAEL-${startDate.slice(0, 4)}-${String(newId).padStart(4, "0")}`;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE contracts SET status = 'RENOVADO', ended_by = ?, ended_at = ?, end_reason = ? WHERE id = ? AND status = 'VIGENTE'").bind(user?.name || "Administración", now, reason, current.id),
+      env.DB.prepare("UPDATE contracts SET contract_number = ? WHERE id = ?").bind(contractNumber, newId),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'CONTRATO', 'Contrato renovado', ?, 'PENDIENTE', ?, ?)").bind(roomId || current.initial_room_id, current.stay_id, `${current.contract_number} → ${contractNumber} · Falta respaldo`, user?.name || "Administración", now),
+    ]);
+    await logAudit(request, user, { action: "CONTRATO_RENOVADO", entityType: "CONTRACT", entityId: newId, roomId: roomId || current.initial_room_id, oldValue: { contractId: current.id, status: "VIGENTE" }, newValue: { contractNumber, status: "PENDIENTE_DOCUMENTO", startDate, endDate }, reason }, now);
+    return Response.json({ ok: true, contractId: newId, contractNumber });
+  }
+
+  if (body.action === "contract_terminate") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede finalizar contratos." }, { status: 403 });
+    const contractId = Number(body.contractId);
+    const reason = String(body.reason || "").trim();
+    if (!contractId || !reason) return Response.json({ error: "Indica el contrato y el motivo de finalización." }, { status: 400 });
+    const contract = await env.DB.prepare("SELECT id, stay_id, initial_room_id, contract_number, status FROM contracts WHERE id = ?").bind(contractId).first<{ id: number; stay_id: number; initial_room_id: number; contract_number: string; status: string }>();
+    if (!contract || !["VIGENTE", "PENDIENTE_DOCUMENTO"].includes(contract.status)) return Response.json({ error: "El contrato ya no puede finalizarse." }, { status: 409 });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE contracts SET status = 'FINALIZADO', ended_by = ?, ended_at = ?, end_reason = ? WHERE id = ? AND status IN ('VIGENTE', 'PENDIENTE_DOCUMENTO')").bind(user?.name || "Administración", now, reason, contract.id),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'CONTRATO', 'Contrato finalizado', ?, 'COMPLETADO', ?, ?)").bind(roomId || contract.initial_room_id, contract.stay_id, `${contract.contract_number} · ${reason}`, user?.name || "Administración", now),
+    ]);
+    await logAudit(request, user, { action: "CONTRATO_FINALIZADO", entityType: "CONTRACT", entityId: contract.id, roomId: roomId || contract.initial_room_id, oldValue: { status: contract.status }, newValue: { status: "FINALIZADO" }, reason }, now);
+    return Response.json({ ok: true });
+  }
 
   if (body.action === "exceptional_exit_submit") {
     const stay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number }>();
@@ -917,6 +991,7 @@ export async function POST(request: Request) {
       env.DB.prepare("UPDATE stays SET status = 'FINALIZADA', check_out = ? WHERE id = ?").bind(now, stay.id),
       env.DB.prepare("UPDATE stay_guests SET left_at = COALESCE(left_at, ?), removed_by = COALESCE(removed_by, ?), removal_reason = COALESCE(removal_reason, 'Salida de la estadía') WHERE stay_id = ? AND left_at IS NULL").bind(now, user?.name || "Recepción", stay.id),
       env.DB.prepare("UPDATE stay_room_segments SET ended_at = ?, end_reason = 'SALIDA', ended_by = ? WHERE id = ?").bind(now, user?.name || "Recepción", segment.id),
+      env.DB.prepare("UPDATE contracts SET status = 'FINALIZADO', ended_by = ?, ended_at = ?, end_reason = 'Finalización de la estadía' WHERE stay_id = ? AND status IN ('VIGENTE', 'PENDIENTE_DOCUMENTO')").bind(user?.name || "Recepción", now, stay.id),
       env.DB.prepare("UPDATE rooms SET status = 'LIMPIEZA' WHERE id = ?").bind(roomId),
       env.DB.prepare("INSERT INTO room_turnovers (stay_id, room_id, segment_id, status, created_at) VALUES (?, ?, ?, 'PENDIENTE', ?)").bind(stay.id, roomId, segment.id, now),
       env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', 'Salida registrada', ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, exceptionalExit ? "Salida sin firma autorizada · Habitación pendiente de limpieza" : body.detail || "Habitación pendiente de limpieza", user?.name || "Usuario", now),
@@ -941,6 +1016,7 @@ export async function POST(request: Request) {
     await env.DB.batch([
       env.DB.prepare("UPDATE stays SET status = 'ACTIVA', check_out = NULL WHERE id = ? AND status = 'FINALIZADA'").bind(stay.id),
       env.DB.prepare("UPDATE stay_guests SET left_at = NULL, removed_by = NULL, removal_reason = NULL WHERE stay_id = ? AND removal_reason = 'Salida de la estadía'").bind(stay.id),
+      env.DB.prepare("UPDATE contracts SET status = CASE WHEN EXISTS (SELECT 1 FROM documents d WHERE d.contract_id = contracts.id AND d.category = 'CONTRATO') THEN 'VIGENTE' ELSE 'PENDIENTE_DOCUMENTO' END, ended_by = NULL, ended_at = NULL, end_reason = NULL WHERE stay_id = ? AND status = 'FINALIZADO' AND end_reason = 'Finalización de la estadía'").bind(stay.id),
       env.DB.prepare("UPDATE room_turnovers SET status = 'COMPLETADO', approved_at = ?, approved_by = ? WHERE id = ? AND status = 'PENDIENTE'").bind(now, `Reapertura: ${user?.name || "Administración"}`, turnover.id),
       env.DB.prepare("INSERT INTO stay_room_segments (stay_id, room_id, sequence, started_at, start_reason, created_by) VALUES (?, ?, ?, ?, ?, ?)").bind(stay.id, roomId, Number(sequence?.value || 0) + 1, now, `REAPERTURA: ${reason}`, user?.name || "Administración"),
       env.DB.prepare("UPDATE rooms SET status = 'OCUPADA' WHERE id = ?").bind(roomId),

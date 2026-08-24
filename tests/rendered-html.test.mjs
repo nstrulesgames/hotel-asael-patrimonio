@@ -261,3 +261,40 @@ test("protege propietarios y libera tareas al desactivar trabajadores", async ()
   assert.match(dashboard, /data\.user\.role !== "RECEPCION" && <button className=\{view === "configuracion"/);
   assert.match(dashboard, /Permisos efectivos/);
 });
+
+test("crea un expediente contractual y exige respaldo firmado", async () => {
+  const [schema, route, documents, dashboard, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/api/documents/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0016_rich_roughhouse.sql"), "utf8"),
+  ]);
+  assert.match(schema, /export const contracts/);
+  assert.match(schema, /contractId: integer\("contract_id"\)/);
+  assert.match(migration, /CREATE TABLE `contracts`/);
+  assert.match(migration, /ALTER TABLE `documents` ADD `contract_id`/);
+  assert.match(route, /body\.action === "contract_create"/);
+  assert.match(route, /PENDIENTE_DOCUMENTO/);
+  assert.match(documents, /contractId/);
+  assert.match(documents, /UPDATE contracts SET status = 'VIGENTE'/);
+  assert.match(dashboard, /function ContractManager/);
+  assert.match(dashboard, /Expediente contractual/);
+});
+
+test("conserva renovaciones, finaliza contratos y alerta vencimientos", async () => {
+  const [route, dashboard] = await Promise.all([
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+  ]);
+  assert.match(route, /body\.action === "contract_renew"/);
+  assert.match(route, /parent_contract_id/);
+  assert.match(route, /body\.action === "contract_terminate"/);
+  assert.match(route, /CONTRATO_SIN_RESPALDO/);
+  assert.match(route, /CONTRATO_VENCIDO/);
+  assert.match(route, /CONTRATO_POR_VENCER/);
+  assert.match(route, /end_reason = 'Finalización de la estadía'/);
+  assert.match(route, /UPDATE contracts SET status = CASE WHEN EXISTS/);
+  assert.match(dashboard, /Renovar contrato/);
+  assert.match(dashboard, /Finalizar contrato/);
+});

@@ -49,6 +49,7 @@ export async function POST(request: Request) {
   let segmentId = Number(form.get("segmentId")) || null;
   const workOrderId = Number(form.get("workOrderId")) || null;
   const inventoryMovementId = Number(form.get("inventoryMovementId")) || null;
+  const contractId = Number(form.get("contractId")) || null;
   const phase = ["GENERAL", "ENTREGA", "DURANTE", "DEVOLUCION", "LIMPIEZA", "MANTENIMIENTO"].includes(String(form.get("phase"))) ? String(form.get("phase")) : "GENERAL";
   const category = String(form.get("category") || "OTRA_EVIDENCIA");
   const description = String(form.get("description") || "").trim().slice(0, 500);
@@ -69,6 +70,11 @@ export async function POST(request: Request) {
     stayId = movement.stay_id;
     segmentId = movement.segment_id;
   }
+  if (contractId) {
+    if (category !== "CONTRATO") return Response.json({ error: "El archivo contractual debe usar la categoría Contrato." }, { status: 400 });
+    const contract = await env.DB.prepare("SELECT id, stay_id, initial_room_id, status, contract_number FROM contracts WHERE id = ?").bind(contractId).first<{ id: number; stay_id: number; initial_room_id: number; status: string; contract_number: string }>();
+    if (!contract || contract.stay_id !== stayId || !["PENDIENTE_DOCUMENTO", "VIGENTE"].includes(contract.status)) return Response.json({ error: "El contrato no corresponde a esta estadía o ya está cerrado." }, { status: 409 });
+  }
   if (stayId) {
     const stay = await env.DB.prepare("SELECT id FROM stays WHERE id = ? AND room_id = ?").bind(stayId, roomId).first();
     const segment = segmentId ? await env.DB.prepare("SELECT id FROM stay_room_segments WHERE id = ? AND stay_id = ? AND room_id = ?").bind(segmentId, stayId, roomId).first() : null;
@@ -78,11 +84,15 @@ export async function POST(request: Request) {
   const documentIds: number[] = [];
   for (const file of files) {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
-    const owner = workOrderId ? "tarea-" + workOrderId : inventoryMovementId ? "movimiento-" + inventoryMovementId : "habitacion";
+    const owner = contractId ? "contrato-" + contractId : workOrderId ? "tarea-" + workOrderId : inventoryMovementId ? "movimiento-" + inventoryMovementId : "habitacion";
     const key = `hotel-asael/${roomId}/${stayId || "sin-estadia"}/${owner}/${crypto.randomUUID()}-${safeName}`;
     await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
-    const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, segment_id, work_order_id, inventory_movement_id, phase, category, description, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, segmentId, workOrderId, inventoryMovementId, phase, category, description, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
+    const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, segment_id, work_order_id, inventory_movement_id, contract_id, phase, category, description, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, segmentId, workOrderId, inventoryMovementId, contractId, phase, category, description, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
     documentIds.push(Number(result.meta.last_row_id));
   }
+  if (contractId) await env.DB.batch([
+    env.DB.prepare("UPDATE contracts SET status = 'VIGENTE' WHERE id = ? AND status = 'PENDIENTE_DOCUMENTO'").bind(contractId),
+    env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) SELECT ?, ?, 'CONTRATO', 'Respaldo contractual cargado', contract_number, 'COMPLETADO', ?, ? FROM contracts WHERE id = ?").bind(roomId, stayId, user.name, new Date().toISOString(), contractId),
+  ]);
   return Response.json({ ok: true, documentIds, documentId: documentIds[0] });
 }

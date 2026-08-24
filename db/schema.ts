@@ -165,6 +165,25 @@ export const roomEvents = sqliteTable("room_events", {
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_events_room_created").on(table.roomId, table.createdAt)]);
 
+export const contracts = sqliteTable("contracts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  primaryGuestId: integer("primary_guest_id").notNull(),
+  initialRoomId: integer("initial_room_id").notNull(),
+  parentContractId: integer("parent_contract_id"),
+  contractNumber: text("contract_number").notNull(),
+  contractType: text("contract_type", { enum: ["ARRENDAMIENTO", "ALOJAMIENTO", "OTRO"] }).notNull(),
+  startDate: text("start_date").notNull(),
+  endDate: text("end_date"),
+  status: text("status", { enum: ["PENDIENTE_DOCUMENTO", "VIGENTE", "RENOVADO", "FINALIZADO"] }).notNull(),
+  notes: text("notes").notNull().default(""),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+  endedBy: text("ended_by"),
+  endedAt: text("ended_at"),
+  endReason: text("end_reason"),
+}, (table) => [index("idx_contracts_stay_status").on(table.stayId, table.status), index("idx_contracts_end_status").on(table.endDate, table.status)]);
+
 export const documents = sqliteTable("documents", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),
@@ -172,6 +191,7 @@ export const documents = sqliteTable("documents", {
   segmentId: integer("segment_id"),
   workOrderId: integer("work_order_id"),
   inventoryMovementId: integer("inventory_movement_id"),
+  contractId: integer("contract_id"),
   phase: text("phase", { enum: ["GENERAL", "ENTREGA", "DURANTE", "DEVOLUCION", "LIMPIEZA", "MANTENIMIENTO"] }).notNull().default("GENERAL"),
   category: text("category").notNull(),
   description: text("description").notNull().default(""),
@@ -180,7 +200,7 @@ export const documents = sqliteTable("documents", {
   contentType: text("content_type").notNull(),
   uploadedBy: text("uploaded_by").notNull().default("Hotel ASAEL"),
   createdAt: text("created_at").notNull(),
-}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId), index("idx_documents_work_order_id").on(table.workOrderId), index("idx_documents_inventory_movement_id").on(table.inventoryMovementId)]);
+}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId), index("idx_documents_work_order_id").on(table.workOrderId), index("idx_documents_inventory_movement_id").on(table.inventoryMovementId), index("idx_documents_contract_id").on(table.contractId)]);
 
 export const inventoryItems = sqliteTable("inventory_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
