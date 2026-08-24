@@ -52,7 +52,7 @@ export default function HotelDashboard() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [companions, setCompanions] = useState<Companion[]>([]);
-  const [view, setView] = useState<"habitaciones" | "huespedes" | "tareas" | "aprobaciones" | "auditoria" | "actividad" | "configuracion">("habitaciones");
+  const [view, setView] = useState<"habitaciones" | "huespedes" | "tareas" | "aprobaciones" | "auditoria" | "reportes" | "actividad" | "configuracion">("habitaciones");
   const [taskRoomId, setTaskRoomId] = useState<number | undefined>();
 
   const load = useCallback(async () => {
@@ -107,6 +107,7 @@ export default function HotelDashboard() {
           <button className={view === "tareas" ? "active" : ""} onClick={() => { setTaskRoomId(undefined); setView("tareas"); }}><span>✓</span> Tareas</button>
           <button className={view === "aprobaciones" ? "active" : ""} onClick={() => setView("aprobaciones")}><span>◇</span> Aprobaciones{pendingApprovals > 0 && <em className="nav-badge">{pendingApprovals}</em>}</button>
           {data.user.role !== "RECEPCION" && <button className={view === "auditoria" ? "active" : ""} onClick={() => setView("auditoria")}><span>≡</span> Auditoría</button>}
+          {data.user.role !== "RECEPCION" && <button className={view === "reportes" ? "active" : ""} onClick={() => setView("reportes")}><span>▥</span> Reportes</button>}
           <button className={view === "actividad" ? "active" : ""} onClick={() => setView("actividad")}><span>◷</span> Actividad</button>
           {data.user.role !== "RECEPCION" && <button className={view === "configuracion" ? "active" : ""} onClick={() => setView("configuracion")}><span>⚙</span> Configuración</button>}
         </nav>
@@ -116,7 +117,7 @@ export default function HotelDashboard() {
 
       <section className="content">
         <header className="topbar">
-          <div><p className="eyebrow">Hotel ASAEL · {new Intl.DateTimeFormat("es-BO", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p><h1>{view === "habitaciones" ? "Estado del hotel" : view === "huespedes" ? "Expedientes de huéspedes" : view === "tareas" ? "Tareas operativas" : view === "aprobaciones" ? "Correcciones y aprobaciones" : view === "auditoria" ? "Auditoría administrativa" : view === "actividad" ? "Bitácora operativa" : "Configuración del hotel"}</h1></div>
+          <div><p className="eyebrow">Hotel ASAEL · {new Intl.DateTimeFormat("es-BO", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p><h1>{view === "habitaciones" ? "Estado del hotel" : view === "huespedes" ? "Expedientes de huéspedes" : view === "tareas" ? "Tareas operativas" : view === "aprobaciones" ? "Correcciones y aprobaciones" : view === "auditoria" ? "Auditoría administrativa" : view === "reportes" ? "Reportes y exportaciones" : view === "actividad" ? "Bitácora operativa" : "Configuración del hotel"}</h1></div>
           <button className="primary" onClick={() => { if (view === "tareas") { document.getElementById("new-work-order")?.scrollIntoView({ behavior: "smooth" }); return; } const room = data.rooms.find((item) => item.status === "DISPONIBLE"); if (room) { setSelected(room); setCompanions([]); setModal("checkin"); } else setNotice("No hay habitaciones disponibles."); }}>{view === "tareas" ? "＋ Nueva tarea" : "＋ Registrar ingreso"}</button>
         </header>
 
@@ -150,6 +151,8 @@ export default function HotelDashboard() {
         {view === "aprobaciones" && <ApprovalsView data={data} busy={busy} onAction={action} />}
 
         {view === "auditoria" && data.user.role !== "RECEPCION" && <AuditView data={data} />}
+
+        {view === "reportes" && data.user.role !== "RECEPCION" && <ReportsView data={data} />}
 
         {view === "configuracion" && data.user.role !== "RECEPCION" && <ConfigurationView data={data} busy={busy} onAction={action} />}
       </section>
@@ -262,6 +265,25 @@ function ExceptionalExitForm({ room, existing, busy, onAction }: { room: Room; e
   };
   if (existing && existing.status !== "RECHAZADA") return <div><div className="form-title"><p className="eyebrow">Habitación {room.number}</p><h2>Salida sin firma</h2></div><div className={"exit-assessment-status status-" + existing.status.toLowerCase()}><b>{existing.status === "PENDIENTE" ? "Pendiente de otra persona autorizadora" : "Excepción autorizada"}</b><span>Solicitada por {existing.requested_by_name} · {existing.photo_count} fotografía(s)</span><p>{existing.reason}</p>{existing.witnesses && <small>Testigos: {existing.witnesses}</small>}{existing.reviewed_by_name && <small>Resuelta por {existing.reviewed_by_name}{existing.review_note ? " · " + existing.review_note : ""}</small>}</div></div>;
   return <form onSubmit={submit}><div className="form-title"><p className="eyebrow">Excepción controlada · Habitación {room.number}</p><h2>Solicitar salida sin firma</h2><p>Úsalo solamente cuando el huésped no pueda o no quiera firmar. Otra persona con rol administrativo deberá autorizarla.</p></div>{existing?.status === "RECHAZADA" && <div className="exit-assessment-status status-rechazada"><b>La solicitud anterior fue rechazada</b><span>{existing.review_note || "Corrige el respaldo y presenta una nueva solicitud."}</span><small>Ahora puedes adjuntar nuevas fotografías y volver a solicitar autorización.</small></div>}<div className="approval-rule pending"><b>La salida permanecerá bloqueada</b><span>Primero se guardarán las fotografías y después se enviará la solicitud para aprobación independiente.</span></div><div className="form-grid one"><label>Motivo obligatorio<textarea name="reason" required placeholder="Describe por qué no se obtiene la firma del huésped…" /></label><label>Testigos, si existen<input name="witnesses" placeholder="Nombres completos o dejar vacío" /></label><label>Fotografías obligatorias<input type="file" accept="image/*" multiple capture="environment" required onChange={(event) => setFiles(Array.from(event.target.files || []))} /><small>{files.length ? `${files.length} fotografía(s) seleccionada(s)` : "Mínimo una fotografía"}</small></label></div>{message && <p className="evidence-message">{message}</p>}<div className="form-actions"><span>El documento quedará marcado como salida sin firma del huésped.</span><button className="primary" disabled={busy || uploading || !files.length}>{uploading ? "Guardando fotografías…" : busy ? "Enviando…" : "Enviar solicitud"}</button></div></form>;
+}
+
+function ReportsView({ data }: { data: Data }) {
+  const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const [from, setFrom] = useState(() => { const date = new Date(); date.setDate(1); return localDate(date); });
+  const [to, setTo] = useState(() => localDate(new Date()));
+  const activeStays = data.rooms.filter((room) => room.status === "OCUPADA" && room.stay_id);
+  const operationalRooms = data.rooms.filter((room) => Boolean(room.active));
+  const currentContracts = data.contracts.filter((contract) => ["VIGENTE", "PENDIENTE_DOCUMENTO"].includes(contract.status));
+  const downloads = [
+    { type: "occupation", title: "Ocupación actual", description: "Estado, piso, capacidad y huésped de cada habitación." },
+    { type: "stays", title: "Estadías", description: "Ingresos, salidas, modalidad, huéspedes y habitaciones utilizadas." },
+    { type: "contracts", title: "Contratos", description: "Vigencias, respaldos, renovaciones y finalizaciones." },
+    { type: "rooms", title: "Historial de habitaciones", description: "Todos los tramos, traslados, fechas y archivos relacionados." },
+    { type: "staff", title: "Actividad del personal", description: "Acciones auditadas, motivos, fechas y registros afectados." },
+  ];
+  const href = (type: string) => `/api/reports?${new URLSearchParams({ type, from, to }).toString()}`;
+  const occupancy = operationalRooms.length ? Math.round((activeStays.length / operationalRooms.length) * 100) : 0;
+  return <section className="reports-page"><article className="panel reports-hero"><div><p className="eyebrow">Información administrativa</p><h2>Reportes del Hotel ASAEL</h2><p>Descarga archivos CSV compatibles con Excel o imprime este resumen para guardarlo como PDF.</p></div><button className="primary" onClick={() => window.print()}>Imprimir / Guardar PDF</button></article><div className="panel report-filters"><label>Desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Hasta<input type="date" value={to} min={from} onChange={(event) => setTo(event.target.value)} /></label><span>El rango se aplica a estadías, contratos, historial y actividad. La ocupación siempre muestra el estado actual.</span></div><div className="report-metrics"><article><small>Ocupación actual</small><b>{occupancy}%</b><span>{activeStays.length} de {operationalRooms.length} habitaciones</span></article><article><small>Estadías activas</small><b>{activeStays.length}</b><span>Huéspedes alojados actualmente</span></article><article><small>Contratos vigentes</small><b>{currentContracts.filter((item) => item.status === "VIGENTE").length}</b><span>{currentContracts.filter((item) => item.status === "PENDIENTE_DOCUMENTO").length} sin respaldo</span></article><article><small>Alertas operativas</small><b>{data.alerts.length}</b><span>Requieren seguimiento</span></article></div><div className="report-downloads">{downloads.map((report) => <article className="panel" key={report.type}><span>▥</span><div><h3>{report.title}</h3><p>{report.description}</p></div><a className="primary" href={href(report.type)} download>Descargar para Excel</a></article>)}</div><article className="panel report-print-area"><header><div><p className="eyebrow">Hotel ASAEL</p><h2>Resumen administrativo</h2><span>Generado el {new Intl.DateTimeFormat("es-BO", { dateStyle: "long", timeStyle: "short" }).format(new Date())}</span></div><b>Ocupación {occupancy}%</b></header><section><h3>Estadías activas</h3><table><thead><tr><th>Habitación</th><th>Huésped</th><th>Modalidad</th><th>Ingreso</th><th>Salida prevista</th></tr></thead><tbody>{activeStays.map((room) => <tr key={room.id}><td>{room.number}</td><td>{room.guest_name}</td><td>{labels[room.stay_type || ""] || room.stay_type}</td><td>{room.check_in?.slice(0, 10)}</td><td>{room.expected_check_out?.slice(0, 10) || "Sin fecha"}</td></tr>)}</tbody></table>{!activeStays.length && <p>Actualmente no existen estadías activas.</p>}</section><section><h3>Contratos en seguimiento</h3><table><thead><tr><th>Contrato</th><th>Huésped</th><th>Estado</th><th>Inicio</th><th>Final</th></tr></thead><tbody>{currentContracts.map((contract) => <tr key={contract.id}><td>{contract.contract_number}</td><td>{contract.guest_name}</td><td>{contract.status === "PENDIENTE_DOCUMENTO" ? "Sin respaldo" : "Vigente"}</td><td>{contract.start_date}</td><td>{contract.end_date || "Sin fecha"}</td></tr>)}</tbody></table>{!currentContracts.length && <p>No existen contratos vigentes o pendientes.</p>}</section></article></section>;
 }
 
 function AuditView({ data }: { data: Data }) {

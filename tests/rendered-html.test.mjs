@@ -298,3 +298,34 @@ test("conserva renovaciones, finaliza contratos y alerta vencimientos", async ()
   assert.match(dashboard, /Renovar contrato/);
   assert.match(dashboard, /Finalizar contrato/);
 });
+
+test("protege los reportes con roles administrativos activos", async () => {
+  const [route, dashboard] = await Promise.all([
+    readFile(projectFile("app/api/reports/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+  ]);
+  assert.match(route, /role IN \('PROPIETARIO', 'ADMINISTRADOR'\)/);
+  assert.match(route, /active = 1/);
+  assert.match(route, /status: 403/);
+  assert.match(dashboard, /data\.user\.role !== "RECEPCION" && <ReportsView/);
+  assert.match(dashboard, /Reportes y exportaciones/);
+});
+
+test("exporta CSV seguro para Excel y ofrece un resumen imprimible", async () => {
+  const [route, dashboard] = await Promise.all([
+    readFile(projectFile("app/api/reports/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+  ]);
+  for (const reportType of ["occupation", "stays", "contracts", "rooms", "staff"]) {
+    assert.match(route, new RegExp(`type === "${reportType}"`));
+  }
+  assert.match(route, /text\/csv; charset=utf-8/);
+  assert.match(route, /content-disposition/);
+  assert.match(route, /\\uFEFF/);
+  assert.match(route, /function safeCsvValue/);
+  assert.match(route, /text = "'" \+ text/);
+  assert.match(route, /from > to/);
+  assert.match(dashboard, /Descargar para Excel/);
+  assert.match(dashboard, /Imprimir \/ Guardar PDF/);
+  assert.match(dashboard, /window\.print\(\)/);
+});
