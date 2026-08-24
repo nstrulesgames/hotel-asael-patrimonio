@@ -162,3 +162,35 @@ test("bloquea la salida observada y crea una tarea hasta la resolución", async 
   assert.match(dashboard, /Autorizar salida/);
   assert.match(dashboard, /Completa primero la tarea bloqueante/);
 });
+
+test("guía evidencias según inventario e infraestructura y admite carga múltiple", async () => {
+  const [dashboard, documents, route, migration] = await Promise.all([
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("app/api/documents/route.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("drizzle/0013_regular_tomas.sql"), "utf8"),
+  ]);
+  assert.match(dashboard, /Evidencias guiadas/);
+  assert.match(dashboard, /infrastructure\.filter/);
+  assert.match(dashboard, /multiple capture=/);
+  assert.match(documents, /form\.getAll\("files"\)/);
+  assert.match(documents, /Puedes cargar como máximo 10 archivos por vez/);
+  assert.match(route, /room_infrastructure_items/);
+  assert.match(migration, /CREATE TABLE `room_infrastructure_items`/);
+});
+
+test("registra movimientos de inventario sin alterar el inventario base", async () => {
+  const [schema, route, dashboard, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("drizzle/0013_regular_tomas.sql"), "utf8"),
+  ]);
+  assert.match(schema, /inventoryMovements/);
+  assert.match(route, /body\.action === "inventory_movement"/);
+  assert.match(route, /MOVIMIENTO_INVENTARIO/);
+  assert.doesNotMatch(route, /inventory_movement[\s\S]{0,1500}UPDATE inventory_items SET quantity/);
+  assert.match(dashboard, /function InventoryMovementForm/);
+  assert.match(dashboard, /Entregado durante la estadía/);
+  assert.match(migration, /CREATE TABLE `inventory_movements`/);
+});

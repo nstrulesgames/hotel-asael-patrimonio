@@ -147,22 +147,51 @@ export const documents = sqliteTable("documents", {
   stayId: integer("stay_id"),
   segmentId: integer("segment_id"),
   workOrderId: integer("work_order_id"),
-  phase: text("phase", { enum: ["GENERAL", "ENTREGA", "DEVOLUCION"] }).notNull().default("GENERAL"),
+  inventoryMovementId: integer("inventory_movement_id"),
+  phase: text("phase", { enum: ["GENERAL", "ENTREGA", "DURANTE", "DEVOLUCION", "LIMPIEZA", "MANTENIMIENTO"] }).notNull().default("GENERAL"),
   category: text("category").notNull(),
+  description: text("description").notNull().default(""),
   filename: text("filename").notNull(),
   objectKey: text("object_key").notNull(),
   contentType: text("content_type").notNull(),
   uploadedBy: text("uploaded_by").notNull().default("Hotel ASAEL"),
   createdAt: text("created_at").notNull(),
-}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId), index("idx_documents_work_order_id").on(table.workOrderId)]);
+}, (table) => [index("idx_documents_stay_id").on(table.stayId), index("idx_documents_segment_id").on(table.segmentId), index("idx_documents_work_order_id").on(table.workOrderId), index("idx_documents_inventory_movement_id").on(table.inventoryMovementId)]);
 
 export const inventoryItems = sqliteTable("inventory_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),
   name: text("name").notNull(),
   quantity: integer("quantity").notNull().default(1),
+  itemType: text("item_type", { enum: ["PERMANENTE", "REUTILIZABLE"] }).notNull().default("PERMANENTE"),
   notes: text("notes").notNull().default(""),
 }, (table) => [index("idx_inventory_room_id").on(table.roomId)]);
+
+export const roomInfrastructureItems = sqliteTable("room_infrastructure_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  roomId: integer("room_id").notNull(),
+  area: text("area").notNull(),
+  name: text("name").notNull(),
+  evidenceCategory: text("evidence_category").notNull(),
+  requiredEvidence: integer("required_evidence", { mode: "boolean" }).notNull().default(true),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  notes: text("notes").notNull().default(""),
+}, (table) => [index("idx_room_infrastructure_room_active").on(table.roomId, table.active)]);
+
+export const inventoryMovements = sqliteTable("inventory_movements", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  segmentId: integer("segment_id").notNull(),
+  inventoryItemId: integer("inventory_item_id"),
+  itemName: text("item_name").notNull(),
+  quantity: integer("quantity").notNull(),
+  movementType: text("movement_type", { enum: ["ENTREGA", "RETIRO", "REEMPLAZO"] }).notNull(),
+  reason: text("reason").notNull(),
+  responsible: text("responsible").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_inventory_movements_segment_created").on(table.segmentId, table.createdAt), index("idx_inventory_movements_room_created").on(table.roomId, table.createdAt)]);
 
 export const inspections = sqliteTable("inspections", {
   id: integer("id").primaryKey({ autoIncrement: true }),

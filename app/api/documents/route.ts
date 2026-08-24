@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 
 const allowedCategories = new Set([
-  "VISTA_GENERAL", "CAMA", "MUEBLES", "BANO", "TELEVISION", "VENTILADOR", "DANOS", "OTRA_EVIDENCIA",
-  "CONTRATO", "ACTA_ENTREGA_FIRMADA", "ACTA_DEVOLUCION_FIRMADA",
+  "VISTA_GENERAL", "CAMA", "MUEBLES", "BANO", "PAREDES_PISO_TECHO", "PUERTAS_VENTANAS", "ILUMINACION_ENCHUFES", "TELEVISION", "VENTILADOR", "INVENTARIO_ADICIONAL", "DANOS", "OTRA_EVIDENCIA",
+  "CONTRATO", "DOCUMENTO_IDENTIDAD", "ACTA_ENTREGA_FIRMADA", "ACTA_DEVOLUCION_FIRMADA", "LIMPIEZA", "MANTENIMIENTO",
   "TRABAJO_ANTES", "TRABAJO_DESPUES",
 ]);
 
@@ -34,16 +34,19 @@ export async function POST(request: Request) {
   const user = await authorizedUser(request);
   if (!user) return Response.json({ error: "Correo no autorizado." }, { status: 403 });
   const form = await request.formData();
-  const file = form.get("file");
-  if (!(file instanceof File)) return Response.json({ error: "Selecciona un archivo." }, { status: 400 });
-  if (file.size > 15 * 1024 * 1024) return Response.json({ error: "El archivo supera el máximo de 15 MB." }, { status: 413 });
-  if (!file.type.startsWith("image/") && file.type !== "application/pdf") return Response.json({ error: "Solo se permiten imágenes o PDF." }, { status: 415 });
+  const files = [...form.getAll("files"), form.get("file")].filter((entry): entry is File => entry instanceof File && entry.size > 0);
+  if (!files.length) return Response.json({ error: "Selecciona al menos un archivo." }, { status: 400 });
+  if (files.length > 10) return Response.json({ error: "Puedes cargar como máximo 10 archivos por vez." }, { status: 400 });
+  if (files.some((file) => file.size > 15 * 1024 * 1024)) return Response.json({ error: "Cada archivo debe pesar como máximo 15 MB." }, { status: 413 });
+  if (files.some((file) => !file.type.startsWith("image/") && file.type !== "application/pdf")) return Response.json({ error: "Solo se permiten imágenes o PDF." }, { status: 415 });
   let roomId = Number(form.get("roomId"));
   let stayId = Number(form.get("stayId")) || null;
   let segmentId = Number(form.get("segmentId")) || null;
   const workOrderId = Number(form.get("workOrderId")) || null;
-  const phase = ["GENERAL", "ENTREGA", "DEVOLUCION"].includes(String(form.get("phase"))) ? String(form.get("phase")) : "GENERAL";
+  const inventoryMovementId = Number(form.get("inventoryMovementId")) || null;
+  const phase = ["GENERAL", "ENTREGA", "DURANTE", "DEVOLUCION", "LIMPIEZA", "MANTENIMIENTO"].includes(String(form.get("phase"))) ? String(form.get("phase")) : "GENERAL";
   const category = String(form.get("category") || "OTRA_EVIDENCIA");
+  const description = String(form.get("description") || "").trim().slice(0, 500);
   if (!roomId || !allowedCategories.has(category)) return Response.json({ error: "Habitación o categoría inválida." }, { status: 400 });
   if (workOrderId) {
     const order = await env.DB.prepare("SELECT room_id, stay_id, segment_id FROM work_orders WHERE id = ?").bind(workOrderId).first<{ room_id: number; stay_id: number | null; segment_id: number | null }>();
@@ -55,15 +58,26 @@ export async function POST(request: Request) {
   } else if (["TRABAJO_ANTES", "TRABAJO_DESPUES"].includes(category)) {
     return Response.json({ error: "La evidencia debe asociarse a una tarea." }, { status: 400 });
   }
+  if (inventoryMovementId) {
+    const movement = await env.DB.prepare("SELECT stay_id, room_id, segment_id FROM inventory_movements WHERE id = ?").bind(inventoryMovementId).first<{ stay_id: number; room_id: number; segment_id: number }>();
+    if (!movement || movement.room_id !== roomId) return Response.json({ error: "El movimiento de inventario no corresponde a esta habitación." }, { status: 409 });
+    stayId = movement.stay_id;
+    segmentId = movement.segment_id;
+  }
   if (stayId) {
     const stay = await env.DB.prepare("SELECT id FROM stays WHERE id = ? AND room_id = ?").bind(stayId, roomId).first();
     const segment = segmentId ? await env.DB.prepare("SELECT id FROM stay_room_segments WHERE id = ? AND stay_id = ? AND room_id = ?").bind(segmentId, stayId, roomId).first() : null;
     if (!stay && !segment) return Response.json({ error: "La estadía no corresponde a esta habitación." }, { status: 409 });
     if (!segment) return Response.json({ error: "Selecciona el segmento correcto de la estadía." }, { status: 409 });
   }
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
-  const key = `hotel-asael/${roomId}/${stayId || "sin-estadia"}/${workOrderId ? "tarea-" + workOrderId : "habitacion"}/${crypto.randomUUID()}-${safeName}`;
-  await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
-  const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, segment_id, work_order_id, phase, category, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, segmentId, workOrderId, phase, category, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
-  return Response.json({ ok: true, documentId: Number(result.meta.last_row_id) });
+  const documentIds: number[] = [];
+  for (const file of files) {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const owner = workOrderId ? "tarea-" + workOrderId : inventoryMovementId ? "movimiento-" + inventoryMovementId : "habitacion";
+    const key = `hotel-asael/${roomId}/${stayId || "sin-estadia"}/${owner}/${crypto.randomUUID()}-${safeName}`;
+    await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+    const result = await env.DB.prepare("INSERT INTO documents (room_id, stay_id, segment_id, work_order_id, inventory_movement_id, phase, category, description, filename, object_key, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(roomId, stayId, segmentId, workOrderId, inventoryMovementId, phase, category, description, file.name, key, file.type || "application/octet-stream", user.name, new Date().toISOString()).run();
+    documentIds.push(Number(result.meta.last_row_id));
+  }
+  return Response.json({ ok: true, documentIds, documentId: documentIds[0] });
 }
