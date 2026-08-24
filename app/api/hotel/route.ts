@@ -11,6 +11,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS stay_guests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, guest_id INTEGER NOT NULL, is_primary INTEGER NOT NULL DEFAULT 0, joined_at TEXT, left_at TEXT, added_by TEXT, removed_by TEXT, removal_reason TEXT)`,
   `CREATE TABLE IF NOT EXISTS primary_guest_transfers (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, previous_guest_id INTEGER NOT NULL, proposed_guest_id INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL, requested_by_user_id INTEGER NOT NULL, requested_by_name TEXT NOT NULL, requested_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT, applied_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS exit_assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, delivery_inspection_id INTEGER NOT NULL, return_inspection_id INTEGER NOT NULL, work_order_id INTEGER, issue_count INTEGER NOT NULL DEFAULT 0, missing_count INTEGER NOT NULL DEFAULT 0, observed_count INTEGER NOT NULL DEFAULT 0, discrepancies TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, submitted_by_user_id INTEGER NOT NULL, submitted_by_name TEXT NOT NULL, submitted_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS exceptional_exit_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, stay_id INTEGER NOT NULL, room_id INTEGER NOT NULL, segment_id INTEGER NOT NULL, reason TEXT NOT NULL, witnesses TEXT NOT NULL DEFAULT '', photo_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, requested_by_user_id INTEGER NOT NULL, requested_by_name TEXT NOT NULL, requested_at TEXT NOT NULL, reviewed_by_user_id INTEGER, reviewed_by_name TEXT, reviewed_at TEXT, review_note TEXT)`,
   `CREATE TABLE IF NOT EXISTS room_events (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, stay_id INTEGER, segment_id INTEGER, work_order_id INTEGER, inventory_movement_id INTEGER, phase TEXT NOT NULL DEFAULT 'GENERAL', category TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL, object_key TEXT NOT NULL, content_type TEXT NOT NULL, uploaded_by TEXT NOT NULL DEFAULT 'Hotel ASAEL', created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, item_type TEXT NOT NULL DEFAULT 'PERMANENTE', notes TEXT NOT NULL DEFAULT '')`,
@@ -39,6 +40,8 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_primary_transfers_stay_requested ON primary_guest_transfers(stay_id, requested_at)`,
   `CREATE INDEX IF NOT EXISTS idx_exit_assessments_status_submitted ON exit_assessments(status, submitted_at)`,
   `CREATE INDEX IF NOT EXISTS idx_exit_assessments_segment_submitted ON exit_assessments(segment_id, submitted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_exceptional_exit_status_requested ON exceptional_exit_requests(status, requested_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_exceptional_exit_segment_requested ON exceptional_exit_requests(segment_id, requested_at)`,
   `CREATE INDEX IF NOT EXISTS idx_turnovers_room_status ON room_turnovers(room_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_stay_segments_stay_sequence ON stay_room_segments(stay_id, sequence)`,
   `CREATE INDEX IF NOT EXISTS idx_work_orders_room_status ON work_orders(room_id, status)`,
@@ -211,7 +214,7 @@ export async function GET(request: Request) {
   await ensureDatabase();
   let user;
   try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
-  const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, auditFeed] = await Promise.all([
+  const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, exceptionalExitRequests, auditFeed] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
       (SELECT COUNT(*) FROM stay_guests sg WHERE sg.stay_id = s.id AND sg.left_at IS NULL) AS guest_count,
@@ -284,9 +287,12 @@ export async function GET(request: Request) {
     env.DB.prepare(`SELECT a.*, r.number AS room_number, g.full_name AS guest_name, w.title AS work_order_title, w.status AS work_order_status
       FROM exit_assessments a JOIN rooms r ON r.id = a.room_id JOIN stays s ON s.id = a.stay_id JOIN guests g ON g.id = s.primary_guest_id LEFT JOIN work_orders w ON w.id = a.work_order_id
       ORDER BY a.submitted_at DESC`).all(),
+    env.DB.prepare(`SELECT request.*, r.number AS room_number, g.full_name AS guest_name
+      FROM exceptional_exit_requests request JOIN rooms r ON r.id = request.room_id JOIN stays s ON s.id = request.stay_id JOIN guests g ON g.id = s.primary_guest_id
+      WHERE ? != 'RECEPCION' OR request.requested_by_user_id = ? ORDER BY request.requested_at DESC`).bind(user?.role || "RECEPCION", user?.id || 0).all(),
     loadAuditFeed(user?.role || "RECEPCION"),
   ]);
-  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, infrastructure: infrastructure.results, inventoryMovements: inventoryMovements.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, auditFeed: auditFeed.results });
+  return Response.json({ user, floors: floors.results, rooms: rooms.results, events: events.results, inventory: inventory.results, infrastructure: infrastructure.results, inventoryMovements: inventoryMovements.results, inspections: inspections.results, inspectionItems: inspectionItems.results, users: users.results, documents: documents.results, alerts: alerts.results, segments: segments.results, workOrders: workOrders.results, workOrderHistory: workOrderHistory.results, changeRequests: changeRequests.results, occupants: occupants.results, guestProfiles: guestProfiles.results, guestStayHistory: guestStayHistory.results, primaryTransfers: primaryTransfers.results, exitAssessments: exitAssessments.results, exceptionalExitRequests: exceptionalExitRequests.results, auditFeed: auditFeed.results });
 }
 
 type ActionPayload = Record<string, unknown> & { action?: string };
@@ -374,18 +380,67 @@ export async function POST(request: Request) {
   const roomId = Number(body.roomId);
   const canConfigure = user?.role === "PROPIETARIO" || user?.role === "ADMINISTRADOR";
 
+  if (body.action === "exceptional_exit_submit") {
+    const stay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number }>();
+    if (!stay) return Response.json({ error: "No existe una estadía activa." }, { status: 409 });
+    const segment = await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number }>();
+    if (!segment) return Response.json({ error: "No existe un tramo activo para esta salida." }, { status: 409 });
+    const reason = String(body.reason || "").trim();
+    const witnesses = String(body.witnesses || "").trim();
+    if (!reason) return Response.json({ error: "Indica por qué el huésped no firmará el acta." }, { status: 400 });
+    const [returnInspection, photoCount, existing] = await Promise.all([
+      env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first(),
+      env.DB.prepare("SELECT COUNT(*) AS total FROM documents WHERE segment_id = ? AND category = 'SALIDA_SIN_FIRMA'").bind(segment.id).first<{ total: number }>(),
+      env.DB.prepare("SELECT id FROM exceptional_exit_requests WHERE segment_id = ? AND status = 'PENDIENTE' LIMIT 1").bind(segment.id).first(),
+    ]);
+    if (!returnInspection) return Response.json({ error: "Primero completa el acta de devolución." }, { status: 409 });
+    if (!photoCount?.total) return Response.json({ error: "Carga al menos una fotografía de respaldo de la salida sin firma." }, { status: 409 });
+    if (existing) return Response.json({ error: "Ya existe una solicitud de salida sin firma pendiente." }, { status: 409 });
+    const result = await env.DB.prepare("INSERT INTO exceptional_exit_requests (stay_id, room_id, segment_id, reason, witnesses, photo_count, status, requested_by_user_id, requested_by_name, requested_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDIENTE', ?, ?, ?)").bind(stay.id, roomId, segment.id, reason, witnesses, photoCount.total, user?.id || 0, user?.name || "Recepción", now).run();
+    const requestId = Number(result.meta.last_row_id);
+    await env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', 'Salida sin firma solicitada', ?, 'PENDIENTE', ?, ?)").bind(roomId, stay.id, `${reason}${witnesses ? " · Testigos: " + witnesses : ""} · ${photoCount.total} fotografía(s)`, user?.name || "Recepción", now).run();
+    await logAudit(request, user, { action: "SALIDA_SIN_FIRMA_SOLICITADA", entityType: "EXCEPTIONAL_EXIT", entityId: requestId, roomId, newValue: { witnesses, photoCount: photoCount.total, status: "PENDIENTE" }, reason }, now);
+    return Response.json({ ok: true, requestId, pending: true });
+  }
+
+  if (body.action === "exceptional_exit_review") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede resolver salidas sin firma." }, { status: 403 });
+    const requestId = Number(body.requestId);
+    const decision = String(body.decision || "");
+    const reviewNote = String(body.reviewNote || "").trim();
+    if (!requestId || !["APROBADA", "RECHAZADA"].includes(decision) || !reviewNote) return Response.json({ error: "Indica la decisión y una nota administrativa." }, { status: 400 });
+    const exceptional = await env.DB.prepare("SELECT * FROM exceptional_exit_requests WHERE id = ? AND status = 'PENDIENTE'").bind(requestId).first<{ id: number; stay_id: number; room_id: number; segment_id: number; requested_by_user_id: number; reason: string }>();
+    if (!exceptional) return Response.json({ error: "La solicitud ya fue resuelta o no existe." }, { status: 409 });
+    if (exceptional.requested_by_user_id === user?.id) return Response.json({ error: "No puedes aprobar ni rechazar tu propia solicitud." }, { status: 403 });
+    if (decision === "APROBADA") {
+      const [stay, activeSegment, photoCount] = await Promise.all([
+        env.DB.prepare("SELECT id FROM stays WHERE id = ? AND room_id = ? AND status = 'ACTIVA'").bind(exceptional.stay_id, exceptional.room_id).first(),
+        env.DB.prepare("SELECT id FROM stay_room_segments WHERE id = ? AND ended_at IS NULL").bind(exceptional.segment_id).first(),
+        env.DB.prepare("SELECT COUNT(*) AS total FROM documents WHERE segment_id = ? AND category = 'SALIDA_SIN_FIRMA'").bind(exceptional.segment_id).first<{ total: number }>(),
+      ]);
+      if (!stay || !activeSegment || !photoCount?.total) return Response.json({ error: "La estadía cambió o ya no conserva fotografías válidas para autorizar." }, { status: 409 });
+    }
+    await env.DB.batch([
+      env.DB.prepare("UPDATE exceptional_exit_requests SET status = ?, reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ? WHERE id = ? AND status = 'PENDIENTE'").bind(decision, user?.id || null, user?.name || "Administración", now, reviewNote, requestId),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', ?, ?, ?, ?, ?)").bind(exceptional.room_id, exceptional.stay_id, decision === "APROBADA" ? "Salida sin firma autorizada" : "Salida sin firma rechazada", reviewNote, decision, user?.name || "Administración", now),
+    ]);
+    await logAudit(request, user, { action: decision === "APROBADA" ? "SALIDA_SIN_FIRMA_APROBADA" : "SALIDA_SIN_FIRMA_RECHAZADA", entityType: "EXCEPTIONAL_EXIT", entityId: requestId, roomId: exceptional.room_id, newValue: { status: decision }, reason: reviewNote }, now);
+    return Response.json({ ok: true });
+  }
+
   if (body.action === "exit_assessment_submit") {
     const stay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA'").bind(roomId).first<{ id: number }>();
     if (!stay) return Response.json({ error: "No existe una estadía activa." }, { status: 409 });
     const segment = await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number }>();
     if (!segment) return Response.json({ error: "No existe un tramo activo para revisar." }, { status: 409 });
-    const [deliveryInspection, returnInspection, deliverySigned, returnSigned] = await Promise.all([
+    const [deliveryInspection, returnInspection, deliverySigned, returnSigned, exceptionalExit] = await Promise.all([
       env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'ENTREGA' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first<{ id: number }>(),
       env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first<{ id: number }>(),
       env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_ENTREGA_FIRMADA' LIMIT 1").bind(segment.id).first(),
       env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_DEVOLUCION_FIRMADA' LIMIT 1").bind(segment.id).first(),
+      env.DB.prepare("SELECT id FROM exceptional_exit_requests WHERE segment_id = ? AND status = 'APROBADA' ORDER BY reviewed_at DESC LIMIT 1").bind(segment.id).first(),
     ]);
-    if (!deliveryInspection || !returnInspection || !deliverySigned || !returnSigned) return Response.json({ error: "Completa ambas actas y carga sus respaldos firmados antes de revisar la salida." }, { status: 409 });
+    if (!deliveryInspection || !returnInspection || !deliverySigned || (!returnSigned && !exceptionalExit)) return Response.json({ error: "Completa ambas actas y carga sus respaldos firmados, o autoriza la salida sin firma, antes de revisar la salida." }, { status: 409 });
     const existing = await env.DB.prepare("SELECT id FROM exit_assessments WHERE segment_id = ? AND return_inspection_id = ? LIMIT 1").bind(segment.id, returnInspection.id).first();
     if (existing) return Response.json({ error: "Esta devolución ya fue revisada." }, { status: 409 });
     const comparison = await compareDeliveryAndReturn(deliveryInspection.id, returnInspection.id);
@@ -829,16 +884,17 @@ export async function POST(request: Request) {
     if (!stay) return Response.json({ error: "No existe una estadía activa." }, { status: 404 });
     const segment = await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number }>();
     if (!segment) return Response.json({ error: "La estadía no tiene un segmento activo para esta habitación." }, { status: 409 });
-    const [deliveryInspection, returnInspection, deliverySigned, returnSigned] = await Promise.all([
+    const [deliveryInspection, returnInspection, deliverySigned, returnSigned, exceptionalExit] = await Promise.all([
       env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'ENTREGA' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first(),
       env.DB.prepare("SELECT id FROM inspections WHERE segment_id = ? AND kind = 'DEVOLUCION' ORDER BY created_at DESC LIMIT 1").bind(segment.id).first(),
       env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_ENTREGA_FIRMADA' LIMIT 1").bind(segment.id).first(),
       env.DB.prepare("SELECT id FROM documents WHERE segment_id = ? AND category = 'ACTA_DEVOLUCION_FIRMADA' LIMIT 1").bind(segment.id).first(),
+      env.DB.prepare("SELECT id FROM exceptional_exit_requests WHERE segment_id = ? AND status = 'APROBADA' ORDER BY reviewed_at DESC LIMIT 1").bind(segment.id).first(),
     ]);
     if (!deliveryInspection) return Response.json({ error: "Primero completa el acta de entrega." }, { status: 409 });
     if (!deliverySigned) return Response.json({ error: "Carga la fotografía del acta de entrega firmada." }, { status: 409 });
     if (!returnInspection) return Response.json({ error: "Primero completa el acta de devolución." }, { status: 409 });
-    if (!returnSigned) return Response.json({ error: "Carga la fotografía del acta de devolución firmada." }, { status: 409 });
+    if (!returnSigned && !exceptionalExit) return Response.json({ error: "Carga el acta de devolución firmada o consigue la autorización de salida sin firma." }, { status: 409 });
     const exitAssessment = await env.DB.prepare("SELECT status FROM exit_assessments WHERE segment_id = ? AND return_inspection_id = ? ORDER BY submitted_at DESC LIMIT 1").bind(segment.id, (returnInspection as { id: number }).id).first<{ status: string }>();
     if (!exitAssessment || !["SIN_OBSERVACIONES", "APROBADA"].includes(exitAssessment.status)) return Response.json({ error: "La revisión comparativa de salida debe estar conforme o aprobada antes de cerrar la estadía." }, { status: 409 });
     const existingTurnover = await env.DB.prepare("SELECT id FROM room_turnovers WHERE room_id = ? AND status != 'COMPLETADO' LIMIT 1").bind(roomId).first();
@@ -849,9 +905,35 @@ export async function POST(request: Request) {
       env.DB.prepare("UPDATE stay_room_segments SET ended_at = ?, end_reason = 'SALIDA', ended_by = ? WHERE id = ?").bind(now, user?.name || "Recepción", segment.id),
       env.DB.prepare("UPDATE rooms SET status = 'LIMPIEZA' WHERE id = ?").bind(roomId),
       env.DB.prepare("INSERT INTO room_turnovers (stay_id, room_id, segment_id, status, created_at) VALUES (?, ?, ?, 'PENDIENTE', ?)").bind(stay.id, roomId, segment.id, now),
-      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', 'Salida registrada', ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, body.detail || "Habitación pendiente de limpieza", user?.name || "Usuario", now),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'SALIDA', 'Salida registrada', ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, exceptionalExit ? "Salida sin firma autorizada · Habitación pendiente de limpieza" : body.detail || "Habitación pendiente de limpieza", user?.name || "Usuario", now),
     ]);
+    await logAudit(request, user, { action: exceptionalExit ? "SALIDA_REGISTRADA_SIN_FIRMA" : "SALIDA_REGISTRADA", entityType: "STAY", entityId: stay.id, roomId, newValue: { status: "FINALIZADA", exceptional: Boolean(exceptionalExit) }, reason: exceptionalExit ? "Salida sin firma previamente autorizada" : "Salida normal" }, now);
     return Response.json({ ok: true });
+  }
+
+  if (body.action === "stay_reopen") {
+    if (!canConfigure) return Response.json({ error: "Solo administración puede reabrir una estadía." }, { status: 403 });
+    const reason = String(body.reason || "").trim();
+    if (!roomId || !reason) return Response.json({ error: "Indica el motivo de la reapertura." }, { status: 400 });
+    const room = await env.DB.prepare("SELECT status, active FROM rooms WHERE id = ?").bind(roomId).first<{ status: string; active: number }>();
+    if (!room?.active || room.status !== "LIMPIEZA") return Response.json({ error: "Solo puede reabrirse antes de iniciar la limpieza y si la habitación sigue sin reasignar." }, { status: 409 });
+    const activeStay = await env.DB.prepare("SELECT id FROM stays WHERE room_id = ? AND status = 'ACTIVA' LIMIT 1").bind(roomId).first();
+    if (activeStay) return Response.json({ error: "La habitación ya fue asignada nuevamente." }, { status: 409 });
+    const turnover = await env.DB.prepare("SELECT id, stay_id FROM room_turnovers WHERE room_id = ? AND status = 'PENDIENTE' ORDER BY created_at DESC LIMIT 1").bind(roomId).first<{ id: number; stay_id: number }>();
+    if (!turnover) return Response.json({ error: "La limpieza ya comenzó o el cierre operativo no permite reapertura." }, { status: 409 });
+    const stay = await env.DB.prepare("SELECT id, status FROM stays WHERE id = ? AND room_id = ?").bind(turnover.stay_id, roomId).first<{ id: number; status: string }>();
+    if (!stay || stay.status !== "FINALIZADA") return Response.json({ error: "La estadía ya no está disponible para reapertura." }, { status: 409 });
+    const sequence = await env.DB.prepare("SELECT COALESCE(MAX(sequence), 0) AS value FROM stay_room_segments WHERE stay_id = ?").bind(stay.id).first<{ value: number }>();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE stays SET status = 'ACTIVA', check_out = NULL WHERE id = ? AND status = 'FINALIZADA'").bind(stay.id),
+      env.DB.prepare("UPDATE stay_guests SET left_at = NULL, removed_by = NULL, removal_reason = NULL WHERE stay_id = ? AND removal_reason = 'Salida de la estadía'").bind(stay.id),
+      env.DB.prepare("UPDATE room_turnovers SET status = 'COMPLETADO', approved_at = ?, approved_by = ? WHERE id = ? AND status = 'PENDIENTE'").bind(now, `Reapertura: ${user?.name || "Administración"}`, turnover.id),
+      env.DB.prepare("INSERT INTO stay_room_segments (stay_id, room_id, sequence, started_at, start_reason, created_by) VALUES (?, ?, ?, ?, ?, ?)").bind(stay.id, roomId, Number(sequence?.value || 0) + 1, now, `REAPERTURA: ${reason}`, user?.name || "Administración"),
+      env.DB.prepare("UPDATE rooms SET status = 'OCUPADA' WHERE id = ?").bind(roomId),
+      env.DB.prepare("INSERT INTO room_events (room_id, stay_id, type, title, detail, status, created_by, created_at) VALUES (?, ?, 'INGRESO', 'Estadía reabierta', ?, 'COMPLETADO', ?, ?)").bind(roomId, stay.id, reason, user?.name || "Administración", now),
+    ]);
+    await logAudit(request, user, { action: "ESTADIA_REABIERTA", entityType: "STAY", entityId: stay.id, roomId, oldValue: { status: "FINALIZADA" }, newValue: { status: "ACTIVA", newSegment: Number(sequence?.value || 0) + 1 }, reason }, now);
+    return Response.json({ ok: true, stayId: stay.id });
   }
 
   if (body.action === "transfer") {

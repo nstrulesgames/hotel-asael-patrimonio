@@ -129,6 +129,24 @@ export const exitAssessments = sqliteTable("exit_assessments", {
   reviewNote: text("review_note"),
 }, (table) => [index("idx_exit_assessments_status_submitted").on(table.status, table.submittedAt), index("idx_exit_assessments_segment_submitted").on(table.segmentId, table.submittedAt)]);
 
+export const exceptionalExitRequests = sqliteTable("exceptional_exit_requests", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  stayId: integer("stay_id").notNull(),
+  roomId: integer("room_id").notNull(),
+  segmentId: integer("segment_id").notNull(),
+  reason: text("reason").notNull(),
+  witnesses: text("witnesses").notNull().default(""),
+  photoCount: integer("photo_count").notNull().default(0),
+  status: text("status", { enum: ["PENDIENTE", "APROBADA", "RECHAZADA"] }).notNull(),
+  requestedByUserId: integer("requested_by_user_id").notNull(),
+  requestedByName: text("requested_by_name").notNull(),
+  requestedAt: text("requested_at").notNull(),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+}, (table) => [index("idx_exceptional_exit_status_requested").on(table.status, table.requestedAt), index("idx_exceptional_exit_segment_requested").on(table.segmentId, table.requestedAt)]);
+
 export const roomEvents = sqliteTable("room_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: integer("room_id").notNull(),

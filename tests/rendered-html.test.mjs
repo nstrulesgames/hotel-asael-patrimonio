@@ -194,3 +194,34 @@ test("registra movimientos de inventario sin alterar el inventario base", async 
   assert.match(dashboard, /Entregado durante la estadía/);
   assert.match(migration, /CREATE TABLE `inventory_movements`/);
 });
+
+test("controla la salida sin firma con evidencias y aprobación independiente", async () => {
+  const [schema, route, dashboard, documents, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("app/api/hotel/route.ts"), "utf8"),
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("app/api/documents/route.ts"), "utf8"),
+    readFile(projectFile("drizzle/0014_complex_marvel_apes.sql"), "utf8"),
+  ]);
+  assert.match(schema, /exceptionalExitRequests/);
+  assert.match(migration, /CREATE TABLE `exceptional_exit_requests`/);
+  assert.match(route, /exceptional_exit_submit/);
+  assert.match(route, /exceptional_exit_review/);
+  assert.match(route, /requested_by_user_id === user\?\.id/);
+  assert.match(route, /No puedes aprobar ni rechazar tu propia solicitud/);
+  assert.match(route, /category = 'SALIDA_SIN_FIRMA'/);
+  assert.match(documents, /SALIDA_SIN_FIRMA/);
+  assert.match(dashboard, /function ExceptionalExitForm/);
+  assert.match(dashboard, /existing && existing\.status !== "RECHAZADA"/);
+});
+
+test("reabre una estadía cerrada solamente antes de iniciar la limpieza", async () => {
+  const route = await readFile(projectFile("app/api/hotel/route.ts"), "utf8");
+  assert.match(route, /body\.action === "stay_reopen"/);
+  assert.match(route, /room\.status !== "LIMPIEZA"/);
+  assert.match(route, /turnover\.status !== "PENDIENTE"/);
+  assert.match(route, /UPDATE stays SET status = 'ACTIVA', check_out = NULL/);
+  assert.match(route, /INSERT INTO stay_room_segments/);
+  assert.match(route, /REAPERTURA:/);
+  assert.match(route, /ESTADIA_REABIERTA/);
+});
