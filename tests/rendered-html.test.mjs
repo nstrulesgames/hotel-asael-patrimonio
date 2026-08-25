@@ -643,3 +643,33 @@ test("exporta reportes comerciales seguros y ofrece comprobantes térmicos", asy
   assert.match(pos, /Exportar ventas/);
   assert.match(pos, /Ventas por huésped y habitación/);
 });
+
+test("restringe Patrimonio Base a propietarios y administradores", async () => {
+  const [dashboard, route] = await Promise.all([
+    readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
+    readFile(projectFile("app/api/patrimony/route.ts"), "utf8"),
+  ]);
+  assert.match(dashboard, /data\.user\.role !== "RECEPCION".+Patrimonio/);
+  assert.match(route, /role IN \('PROPIETARIO', 'ADMINISTRADOR'\)/);
+  assert.match(route, /Patrimonio Base está disponible únicamente para Administración/);
+  assert.match(route, /COBRO_PATRIMONIAL_REGISTRADO/);
+  assert.match(route, /GASTO_PATRIMONIAL_REGISTRADO/);
+});
+
+test("persiste propiedades, inquilinos, cobros, gastos y distribución patrimonial", async () => {
+  const [schema, migration, view, operations] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("drizzle/0022_sturdy_rockslide.sql"), "utf8"),
+    readFile(projectFile("app/PatrimonyView.tsx"), "utf8"),
+    readFile(projectFile("app/PatrimonyOperations.tsx"), "utf8"),
+  ]);
+  assert.match(schema, /patrimonyProperties/);
+  assert.match(schema, /patrimonyTenants/);
+  assert.match(schema, /patrimonyPayments/);
+  assert.match(schema, /patrimonyExpenses/);
+  assert.match(migration, /CREATE TABLE .patrimony_distribution./);
+  assert.match(migration, /CREATE TABLE .patrimony_properties./);
+  assert.match(view, /Acceso administrativo restringido/);
+  assert.match(operations, /Todo gasto entra pendiente/);
+  assert.match(operations, /La suma debe ser exactamente 100%/);
+});

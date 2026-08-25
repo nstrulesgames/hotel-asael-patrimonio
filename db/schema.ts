@@ -560,3 +560,83 @@ export const saleStockAllocations = sqliteTable("sale_stock_allocations", {
   quantity: integer("quantity").notNull(),
   unitCostCents: integer("unit_cost_cents").notNull(),
 }, (table) => [index("idx_sale_allocations_sale").on(table.saleId), index("idx_sale_allocations_batch").on(table.batchId)]);
+
+export const patrimonyProperties = sqliteTable("patrimony_properties", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  propertyType: text("property_type").notNull(),
+  address: text("address").notNull().default(""),
+  unitCount: integer("unit_count").notNull().default(0),
+  monthlyPotentialCents: integer("monthly_potential_cents").notNull().default(0),
+  status: text("status", { enum: ["PRODUCTIVA", "VACANTE", "LITIGIO", "DISPUTA", "OPORTUNIDAD", "INACTIVA"] }).notNull().default("PRODUCTIVA"),
+  notes: text("notes").notNull().default(""),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  createdByName: text("created_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
+}, (table) => [index("idx_patrimony_properties_status").on(table.active, table.status)]);
+
+export const patrimonyTenants = sqliteTable("patrimony_tenants", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  propertyId: integer("property_id").notNull(),
+  unitName: text("unit_name").notNull(),
+  fullName: text("full_name").notNull(),
+  ci: text("ci"),
+  phone: text("phone"),
+  monthlyRentCents: integer("monthly_rent_cents").notNull().default(0),
+  paymentDay: integer("payment_day").notNull(),
+  contractStart: text("contract_start"),
+  contractEnd: text("contract_end"),
+  status: text("status", { enum: ["ACTIVO", "PENDIENTE", "VENCIDO", "FINALIZADO"] }).notNull().default("ACTIVO"),
+  notes: text("notes").notNull().default(""),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  createdByName: text("created_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
+}, (table) => [index("idx_patrimony_tenants_property_active").on(table.propertyId, table.active)]);
+
+export const patrimonyPayments = sqliteTable("patrimony_payments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  propertyId: integer("property_id").notNull(),
+  tenantId: integer("tenant_id"),
+  paidOn: text("paid_on").notNull(),
+  concept: text("concept").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  paymentMethod: text("payment_method", { enum: ["EFECTIVO", "TRANSFERENCIA", "QR", "OTRO"] }).notNull(),
+  status: text("status", { enum: ["CONCILIADO", "VERIFICADO", "PENDIENTE", "ANULADO"] }).notNull().default("CONCILIADO"),
+  reference: text("reference").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  createdByName: text("created_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_patrimony_payments_property_date").on(table.propertyId, table.paidOn), index("idx_patrimony_payments_tenant_date").on(table.tenantId, table.paidOn)]);
+
+export const patrimonyExpenses = sqliteTable("patrimony_expenses", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  propertyId: integer("property_id").notNull(),
+  incurredOn: text("incurred_on").notNull(),
+  category: text("category").notNull(),
+  description: text("description").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  status: text("status", { enum: ["PENDIENTE", "APROBADO", "RECHAZADO"] }).notNull().default("PENDIENTE"),
+  evidenceNote: text("evidence_note").notNull(),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  createdByName: text("created_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+}, (table) => [index("idx_patrimony_expenses_property_date").on(table.propertyId, table.incurredOn), index("idx_patrimony_expenses_status_date").on(table.status, table.incurredOn)]);
+
+export const patrimonyDistribution = sqliteTable("patrimony_distribution", {
+  code: text("code").primaryKey(),
+  label: text("label").notNull(),
+  percentage: integer("percentage").notNull(),
+  position: integer("position").notNull(),
+  updatedByUserId: integer("updated_by_user_id"),
+  updatedByName: text("updated_by_name"),
+  updatedAt: text("updated_at").notNull(),
+});

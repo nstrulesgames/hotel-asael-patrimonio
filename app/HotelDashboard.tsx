@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import StoreView from "./StoreView";
 import PosView from "./PosView";
+import PatrimonyView from "./PatrimonyView";
 
 type Floor = { id: number; name: string; position: number; active: number };
 type Room = { id: number; floor_id: number; number: string; type: string; capacity: number; status: string; notes: string; active: number; stay_id?: number; stay_type?: string; stay_notes?: string; check_in?: string; expected_check_out?: string; guest_id?: number; guest_name?: string; guest_ci?: string; guest_phone?: string; guest_count?: number; current_segment_id?: number; turnover_id?: number; turnover_status?: "PENDIENTE" | "EN_LIMPIEZA" | "PENDIENTE_INSPECCION" | "OBSERVADO" | "COMPLETADO"; cleaning_started_at?: string; cleaning_started_by?: string; cleaning_completed_at?: string; cleaning_completed_by?: string };
@@ -60,7 +61,7 @@ export default function HotelDashboard() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [companions, setCompanions] = useState<Companion[]>([]);
-  const [view, setView] = useState<"habitaciones" | "huespedes" | "tareas" | "aprobaciones" | "auditoria" | "reportes" | "ventas" | "almacen" | "actividad" | "configuracion">("habitaciones");
+  const [view, setView] = useState<"habitaciones" | "huespedes" | "tareas" | "aprobaciones" | "auditoria" | "reportes" | "ventas" | "almacen" | "patrimonio" | "actividad" | "configuracion">("habitaciones");
   const [taskRoomId, setTaskRoomId] = useState<number | undefined>();
 
   const load = useCallback(async () => {
@@ -118,6 +119,7 @@ export default function HotelDashboard() {
           {data.user.role !== "RECEPCION" && <button className={view === "reportes" ? "active" : ""} onClick={() => setView("reportes")}><span>▥</span> Reportes</button>}
           <button className={view === "ventas" ? "active" : ""} onClick={() => setView("ventas")}><span>¤</span> Ventas</button>
           <button className={view === "almacen" ? "active" : ""} onClick={() => setView("almacen")}><span>▤</span> Almacén</button>
+          {data.user.role !== "RECEPCION" && <button className={view === "patrimonio" ? "active" : ""} onClick={() => setView("patrimonio")}><span>◆</span> Patrimonio</button>}
           <button className={view === "actividad" ? "active" : ""} onClick={() => setView("actividad")}><span>◷</span> Actividad</button>
           {data.user.role !== "RECEPCION" && <button className={view === "configuracion" ? "active" : ""} onClick={() => setView("configuracion")}><span>⚙</span> Configuración</button>}
         </nav>
@@ -127,8 +129,8 @@ export default function HotelDashboard() {
 
       <section className="content">
         <header className="topbar">
-          <div><p className="eyebrow">Hotel ASAEL · {new Intl.DateTimeFormat("es-BO", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p><h1>{view === "habitaciones" ? "Estado del hotel" : view === "huespedes" ? "Expedientes de huéspedes" : view === "tareas" ? "Tareas operativas" : view === "aprobaciones" ? "Correcciones y aprobaciones" : view === "auditoria" ? "Auditoría administrativa" : view === "reportes" ? "Reportes y exportaciones" : view === "ventas" ? "Mini punto de venta" : view === "almacen" ? "Almacén comercial" : view === "actividad" ? "Bitácora operativa" : "Configuración del hotel"}</h1></div>
-          {view !== "almacen" && view !== "ventas" && <button className="primary" onClick={() => { if (view === "tareas") { document.getElementById("new-work-order")?.scrollIntoView({ behavior: "smooth" }); return; } const room = data.rooms.find((item) => item.status === "DISPONIBLE"); if (room) { setSelected(room); setCompanions([]); setModal("checkin"); } else setNotice("No hay habitaciones disponibles."); }}>{view === "tareas" ? "＋ Nueva tarea" : "＋ Registrar ingreso"}</button>}
+          <div><p className="eyebrow">Hotel ASAEL · {new Intl.DateTimeFormat("es-BO", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p><h1>{view === "habitaciones" ? "Estado del hotel" : view === "huespedes" ? "Expedientes de huéspedes" : view === "tareas" ? "Tareas operativas" : view === "aprobaciones" ? "Correcciones y aprobaciones" : view === "auditoria" ? "Auditoría administrativa" : view === "reportes" ? "Reportes y exportaciones" : view === "ventas" ? "Mini punto de venta" : view === "almacen" ? "Almacén comercial" : view === "patrimonio" ? "Control patrimonial" : view === "actividad" ? "Bitácora operativa" : "Configuración del hotel"}</h1></div>
+          {view !== "almacen" && view !== "ventas" && view !== "patrimonio" && <button className="primary" onClick={() => { if (view === "tareas") { document.getElementById("new-work-order")?.scrollIntoView({ behavior: "smooth" }); return; } const room = data.rooms.find((item) => item.status === "DISPONIBLE"); if (room) { setSelected(room); setCompanions([]); setModal("checkin"); } else setNotice("No hay habitaciones disponibles."); }}>{view === "tareas" ? "＋ Nueva tarea" : "＋ Registrar ingreso"}</button>}
         </header>
 
         {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
@@ -167,6 +169,8 @@ export default function HotelDashboard() {
         {view === "ventas" && <PosView />}
 
         {view === "almacen" && <StoreView />}
+
+        {view === "patrimonio" && data.user.role !== "RECEPCION" && <PatrimonyView />}
 
         {view === "configuracion" && data.user.role !== "RECEPCION" && <ConfigurationView data={data} busy={busy} onAction={action} />}
       </section>
