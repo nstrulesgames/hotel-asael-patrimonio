@@ -378,7 +378,7 @@ test("integra la pantalla de almacén con catálogo, ingresos y transferencias",
   ]);
   assert.match(dashboard, /<StoreView \/>/);
   assert.match(dashboard, /> Almacén<\/button>/);
-  assert.match(store, /Nuevo producto/);
+  assert.match(store, /Nuevo artículo/);
   assert.match(store, /Ingreso al almacén/);
   assert.match(store, /Reponer recepción/);
   assert.match(store, /Almacén principal \+ Recepción/);
@@ -433,7 +433,7 @@ test("integra carrito, cargos a estadías y comprobantes reimprimibles", async (
 
 test("bloquea la salida mientras existan consumos pendientes", async () => {
   const route = await readFile(projectFile("app/api/hotel/route.ts"), "utf8");
-  assert.match(route, /FROM sales sale WHERE sale\.stay_id = \? AND sale\.status = 'PENDIENTE'/);
+  assert.match(route, /sale\.status IN \('PENDIENTE', 'CORTESIA_PENDIENTE'\)/);
   assert.match(route, /Resuélvelas en Ventas antes de registrar la salida/);
 });
 
@@ -566,4 +566,80 @@ test("carga y consulta respaldos privados para pagos digitales", async () => {
   assert.match(pos, /uploadPaymentEvidences/);
   assert.match(pos, /Captura o PDF/);
   assert.match(pos, /Sin respaldo/);
+});
+
+test("persiste servicios, revisión de cortesías y comprobantes de compra", async () => {
+  const [schema, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("drizzle/0021_ambiguous_orphan.sql"), "utf8"),
+  ]);
+  assert.match(schema, /itemType: text\("item_type"/);
+  assert.match(schema, /CORTESIA_PENDIENTE/);
+  assert.match(schema, /courtesyReviewedByName/);
+  assert.match(schema, /receiptObjectKey/);
+  assert.match(migration, /services_enabled/);
+  assert.match(migration, /ADD `item_type`/);
+  assert.match(migration, /ADD `receipt_object_key`/);
+});
+
+test("vende servicios sin existencias y mantiene el módulo bajo llave", async () => {
+  const [route, store, pos] = await Promise.all([
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/StoreView.tsx"), "utf8"),
+    readFile(projectFile("app/PosView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /body\.action === "services_toggle"/);
+  assert.match(route, /user\.role !== "PROPIETARIO"/);
+  assert.match(route, /product\.item_type === "SERVICIO"/);
+  assert.match(route, /Los servicios no reciben existencias físicas/);
+  assert.match(store, /Activar módulo de servicios/);
+  assert.match(pos, /Productos y servicios/);
+  assert.match(pos, /sin existencias/);
+});
+
+test("solicita y resuelve cortesías antes de descontar stock", async () => {
+  const [route, pos] = await Promise.all([
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/PosView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /courtesyPending = paymentMethod === "CORTESIA" && !isAdministrator\(user\)/);
+  assert.match(route, /body\.action === "courtesy_review"/);
+  assert.match(route, /CORTESIA_RECHAZADA/);
+  assert.match(route, /Repón stock antes de aprobar/);
+  assert.match(route, /if \(!courtesyPending\) allocations\.forEach/);
+  assert.match(pos, /Solicitar cortesía/);
+  assert.match(pos, /Cortesías por aprobar/);
+  assert.match(pos, /Aprobar cortesía/);
+});
+
+test("respalda ingresos de almacén con proveedor y archivo privado", async () => {
+  const [route, storeRoute, store] = await Promise.all([
+    readFile(projectFile("app/api/stock-entry-evidence/route.ts"), "utf8"),
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/StoreView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /Solo Administración puede cargar comprobantes de compra/);
+  assert.match(route, /env\.FILES\.put/);
+  assert.match(route, /receipt_object_key/);
+  assert.match(route, /COMPROBANTE_COMPRA_CARGADO/);
+  assert.match(storeRoute, /supplier, receipt_number/);
+  assert.match(storeRoute, /movementId/);
+  assert.match(store, /Fotografía o PDF del comprobante/);
+  assert.match(store, /Ver comprobante de compra/);
+});
+
+test("exporta reportes comerciales seguros y ofrece comprobantes térmicos", async () => {
+  const [reports, storeRoute, pos] = await Promise.all([
+    readFile(projectFile("app/api/commercial-reports/route.ts"), "utf8"),
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/PosView.tsx"), "utf8"),
+  ]);
+  assert.match(reports, /type === "sales"/);
+  assert.match(reports, /type === "inventory"/);
+  assert.match(reports, /\\uFEFF/);
+  assert.match(reports, /text = `'\$\{text\}`/);
+  assert.match(storeRoute, /format === "thermal"/);
+  assert.match(storeRoute, /Firma del cliente \/ huésped/);
+  assert.match(pos, /Exportar ventas/);
+  assert.match(pos, /Ventas por huésped y habitación/);
 });

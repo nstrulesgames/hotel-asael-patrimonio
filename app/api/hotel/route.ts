@@ -976,7 +976,7 @@ export async function POST(request: Request) {
     if (!stay) return Response.json({ error: "No existe una estadía activa." }, { status: 404 });
     const pendingSales = await env.DB.prepare(`SELECT COUNT(*) AS sale_count,
       COALESCE(SUM(MAX(0, sale.total_cents - COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0))), 0) AS pending_cents
-      FROM sales sale WHERE sale.stay_id = ? AND sale.status = 'PENDIENTE'`).bind(stay.id).first<{ sale_count: number; pending_cents: number }>();
+      FROM sales sale WHERE sale.stay_id = ? AND sale.status IN ('PENDIENTE', 'CORTESIA_PENDIENTE')`).bind(stay.id).first<{ sale_count: number; pending_cents: number }>();
     if (Number(pendingSales?.sale_count || 0) > 0) return Response.json({ error: `La estadía tiene ${Number(pendingSales?.sale_count || 0)} venta(s) pendiente(s) por Bs ${(Number(pendingSales?.pending_cents || 0) / 100).toFixed(2)}. Resuélvelas en Ventas antes de registrar la salida.` }, { status: 409 });
     const segment = await env.DB.prepare("SELECT id FROM stay_room_segments WHERE stay_id = ? AND room_id = ? AND ended_at IS NULL ORDER BY sequence DESC LIMIT 1").bind(stay.id, roomId).first<{ id: number }>();
     if (!segment) return Response.json({ error: "La estadía no tiene un segmento activo para esta habitación." }, { status: 409 });

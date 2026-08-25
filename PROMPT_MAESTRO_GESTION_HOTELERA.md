@@ -881,3 +881,23 @@ Reposición
 Antes de implementar una función, valida que respete los estados, permisos, historial y excepciones descritos. Si aparece una ambigüedad que pueda cambiar el resultado operativo, formula una pregunta de negocio con un ejemplo concreto y una recomendación. No inventes reglas financieras ni legales.
 
 Implementa por fases, prueba cada transición de estado y conserva compatibilidad con los datos existentes. Prioriza una interfaz clara para personal no técnico, botones grandes para celular, captura directa de fotografías, mensajes comprensibles y prevención de errores antes que configuraciones excesivamente técnicas.
+
+---
+
+## 22. Estado consolidado del bloque comercial
+
+Además del diseño anterior, el sistema ya incorpora caja compartida, cobros parciales, devoluciones, reposiciones aprobadas, ajustes de inventario, respaldos de pagos digitales y límite configurable de consumos pendientes.
+
+El cierre funcional del mini POS aplica estas reglas adicionales confirmadas:
+
+- El catálogo distingue `PRODUCTO` y `SERVICIO`.
+- Los servicios no tienen existencias ni generan movimientos físicos.
+- El módulo de servicios inicia desactivado y solamente el Propietario puede activarlo o desactivarlo.
+- Recepción puede solicitar una cortesía indicando el motivo. Mientras esté pendiente no descuenta existencias, no se imprime como venta confirmada y bloquea la salida normal de la estadía.
+- Administrador o Propietario aprueban o rechazan la cortesía. La aprobación vuelve a validar existencias y recién entonces descuenta el stock; el rechazo conserva la solicitud como evidencia.
+- Los ingresos de almacén pueden registrar proveedor, número de comprobante y una fotografía o PDF privado.
+- Las ventas directas admiten nombre, CI y celular opcionales.
+- Los comprobantes internos ofrecen formato carta y térmico, con espacios de firma.
+- Administración puede exportar ventas y movimientos de almacén en CSV compatible con Excel.
+- Los reportes comerciales incluyen ventas por huésped, habitación, trabajador, producto, forma de pago y estado.
+- Las alertas de vencimiento distinguen los rangos de 30, 15 y 7 días.

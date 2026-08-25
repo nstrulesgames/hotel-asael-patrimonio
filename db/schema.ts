@@ -352,6 +352,7 @@ export const commercialProducts = sqliteTable("commercial_products", {
   sku: text("sku").notNull().unique(),
   name: text("name").notNull(),
   category: text("category").notNull().default("OTROS"),
+  itemType: text("item_type", { enum: ["PRODUCTO", "SERVICIO"] }).notNull().default("PRODUCTO"),
   purchaseUnit: text("purchase_unit").notNull(),
   saleUnit: text("sale_unit").notNull(),
   unitsPerPurchase: integer("units_per_purchase").notNull().default(1),
@@ -395,6 +396,11 @@ export const stockMovements = sqliteTable("stock_movements", {
   totalCostCents: integer("total_cost_cents").notNull().default(0),
   reason: text("reason").notNull(),
   responsible: text("responsible").notNull(),
+  supplier: text("supplier"),
+  receiptNumber: text("receipt_number"),
+  receiptFilename: text("receipt_filename"),
+  receiptObjectKey: text("receipt_object_key"),
+  receiptContentType: text("receipt_content_type"),
   createdBy: text("created_by").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_stock_movements_product_created").on(table.productId, table.createdAt), index("idx_stock_movements_locations_created").on(table.fromLocationId, table.toLocationId, table.createdAt)]);
@@ -438,7 +444,9 @@ export const sales = sqliteTable("sales", {
   roomId: integer("room_id"),
   consumerGuestId: integer("consumer_guest_id"),
   customerName: text("customer_name"),
-  status: text("status", { enum: ["PAGADA", "PENDIENTE", "ANULADA", "DEVUELTA"] }).notNull(),
+  customerCi: text("customer_ci"),
+  customerPhone: text("customer_phone"),
+  status: text("status", { enum: ["PAGADA", "PENDIENTE", "ANULADA", "DEVUELTA", "CORTESIA_PENDIENTE", "CORTESIA_RECHAZADA"] }).notNull(),
   paymentMethod: text("payment_method", { enum: ["EFECTIVO", "TRANSFERENCIA", "QR", "PENDIENTE", "CORTESIA", "OTRO"] }).notNull(),
   cashSessionId: integer("cash_session_id"),
   subtotalCents: integer("subtotal_cents").notNull(),
@@ -452,6 +460,10 @@ export const sales = sqliteTable("sales", {
   cancelledByName: text("cancelled_by_name"),
   cancelledAt: text("cancelled_at"),
   cancellationReason: text("cancellation_reason"),
+  courtesyReviewedByUserId: integer("courtesy_reviewed_by_user_id"),
+  courtesyReviewedByName: text("courtesy_reviewed_by_name"),
+  courtesyReviewedAt: text("courtesy_reviewed_at"),
+  courtesyReviewNote: text("courtesy_review_note"),
 }, (table) => [index("idx_sales_stay_status").on(table.stayId, table.status), index("idx_sales_created_status").on(table.createdAt, table.status)]);
 
 export const cashSessions = sqliteTable("cash_sessions", {
