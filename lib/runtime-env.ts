@@ -16,6 +16,13 @@ function postgresClient() {
   return client;
 }
 
+let operationQueue: Promise<void> = Promise.resolve();
+function serializeDbOperation<T>(operation: () => Promise<T>) {
+  const result = operationQueue.then(operation, operation);
+  operationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 function questionIndexes(text: string) {
   const indexes: number[] = [];
   let quoted = false;
@@ -100,18 +107,21 @@ class PreparedStatement {
   private async execute<T>(returnId = false): Promise<QueryResult<T>> {
     const translated = translateSql(this.query, this.params, returnId);
     if (translated.skip) return { results: [], success: true, meta: { changes: 0 } };
-    const runner = (this.executor || postgresClient()) as unknown as Executor;
-    const rawRows = await runner.unsafe(translated.text, translated.params) as T[];
-    const rows = rawRows.map((row) => Object.fromEntries(
-      Object.entries(row as Record<string, unknown>).map(([key, value]) => {
-        if (typeof value === "boolean") return [key, value ? 1 : 0];
-        const numericAggregate = key === "total" || key === "active_memberships" || key === "days_overdue" || key.endsWith("_count") || key.endsWith("_cents") || key.endsWith("_stock");
-        if (numericAggregate && typeof value === "string" && /^-?\d+$/.test(value)) return [key, Number(value)];
-        return [key, value];
-      }),
-    ) as T);
-    const first = rows[0] as { id?: number } | undefined;
-    return { results: rows, success: true, meta: { changes: rows.length, ...(first?.id === undefined ? {} : { last_row_id: first.id }) } };
+    const executeQuery = async () => {
+      const runner = (this.executor || postgresClient()) as unknown as Executor;
+      const rawRows = await runner.unsafe(translated.text, translated.params) as T[];
+      const rows = rawRows.map((row) => Object.fromEntries(
+        Object.entries(row as Record<string, unknown>).map(([key, value]) => {
+          if (typeof value === "boolean") return [key, value ? 1 : 0];
+          const numericAggregate = key === "total" || key === "active_memberships" || key === "days_overdue" || key.endsWith("_count") || key.endsWith("_cents") || key.endsWith("_stock");
+          if (numericAggregate && typeof value === "string" && /^-?\d+$/.test(value)) return [key, Number(value)];
+          return [key, value];
+        }),
+      ) as T);
+      const first = rows[0] as { id?: number } | undefined;
+      return { results: rows, success: true, meta: { changes: rows.length, ...(first?.id === undefined ? {} : { last_row_id: first.id }) } };
+    };
+    return this.executor ? executeQuery() : serializeDbOperation(executeQuery);
   }
   async first<T = Record<string, unknown>>() { return (await this.execute<T>()).results[0] ?? null; }
   async all<T = Record<string, unknown>>() { return this.execute<T>(); }
@@ -121,14 +131,14 @@ class PreparedStatement {
 const DB = {
   prepare(query: string) { return new PreparedStatement(query); },
   async batch(statements: PreparedStatement[]) {
-    return postgresClient().begin(async (transaction) => {
+    return serializeDbOperation(() => postgresClient().begin(async (transaction) => {
       const results = [];
       for (const statement of statements) {
         const scoped = Object.assign(Object.create(Object.getPrototypeOf(statement)), statement, { executor: transaction as unknown as Executor });
         results.push(await scoped.run());
       }
       return results;
-    });
+    }));
   },
 };
 
