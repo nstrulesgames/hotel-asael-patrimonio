@@ -21,23 +21,5 @@ export async function POST(request: Request) {
     return Response.json({ error: "Este correo no tiene acceso activo al Hotel ASAEL." }, { status: 403 });
   }
 
-  const callback = new URL("/auth/confirm", request.url);
-  callback.searchParams.set("next", "/restablecer-contrasena");
-
-  const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.resetPasswordForEmail(authorized.email, {
-    redirectTo: callback.toString(),
-  });
-  if (error) {
-    console.error("Supabase password recovery request failed", error);
-    if (error.status === 429 || error.code === "over_email_send_rate_limit") {
-      return Response.json(
-        { error: "El servicio de correo alcanzó su límite temporal. Espera unos minutos y vuelve a intentarlo una sola vez." },
-        { status: 429, headers: { "Retry-After": "600" } },
-      );
-    }
-    return Response.json({ error: "No se pudo enviar la recuperación. Intenta nuevamente en unos minutos." }, { status: 502 });
-  }
-
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, email: authorized.email });
 }

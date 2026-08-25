@@ -51,16 +51,26 @@ export default function SignInPage() {
         body: JSON.stringify({ email: email.trim() }),
       });
       const raw = await response.text();
-      let result: { error?: string } = {};
+      let result: { error?: string; email?: string } = {};
       if (raw) {
         try {
-          result = JSON.parse(raw) as { error?: string };
+          result = JSON.parse(raw) as { error?: string; email?: string };
         } catch {
           throw new Error("La dirección abierta no corresponde a la versión actual. Abre nuevamente el enlace de Vercel.");
         }
       }
       if (!response.ok) throw new Error(result.error || "El servidor no respondió correctamente. Intenta nuevamente.");
-      setMessage("Revisa tu correo. Te enviamos un enlace para crear una contraseña.");
+      const supabase = createSupabaseBrowserClient();
+      const callback = new URL("/auth/confirm", window.location.origin);
+      callback.searchParams.set("next", "/restablecer-contrasena");
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(result.email || email.trim(), {
+        redirectTo: callback.toString(),
+      });
+      if (resetError?.status === 429 || resetError?.code === "over_email_send_rate_limit") {
+        throw new Error("El servicio de correo alcanzó su límite temporal. Espera unos minutos y vuelve a intentarlo una sola vez.");
+      }
+      if (resetError) throw new Error("No se pudo enviar la recuperación. Intenta nuevamente en unos minutos.");
+      setMessage("Revisa tu correo. Te enviamos un enlace para crear una contraseña. Ábrelo en este mismo navegador.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo enviar la recuperación.");
     } finally {
