@@ -50,8 +50,16 @@ export default function SignInPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: email.trim() }),
       });
-      const result = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(result.error || "No se pudo enviar la recuperación.");
+      const raw = await response.text();
+      let result: { error?: string } = {};
+      if (raw) {
+        try {
+          result = JSON.parse(raw) as { error?: string };
+        } catch {
+          throw new Error("La dirección abierta no corresponde a la versión actual. Abre nuevamente el enlace de Vercel.");
+        }
+      }
+      if (!response.ok) throw new Error(result.error || "El servidor no respondió correctamente. Intenta nuevamente.");
       setMessage("Revisa tu correo. Te enviamos un enlace para crear una contraseña.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo enviar la recuperación.");
