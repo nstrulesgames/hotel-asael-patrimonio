@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 
 type StoreUser = { id: number; name: string; email: string; role: "PROPIETARIO" | "ADMINISTRADOR" | "RECEPCION" };
 type StorePayload = Record<string, unknown> & { action?: string };

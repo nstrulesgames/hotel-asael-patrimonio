@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT NOT NULL UNIQUE, email TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, invited_by TEXT, activated_at TEXT, last_access_at TEXT, deactivated_at TEXT, deactivated_by TEXT, deactivation_reason TEXT, created_at TEXT NOT NULL)`,
@@ -257,7 +257,7 @@ async function loadOperationalAlerts() {
 export async function GET(request: Request) {
   await ensureDatabase();
   let user;
-  try { user = await ensureUser(request); } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
+  try { user = await ensureUser(request) as { id?: number; name?: string; email?: string; role?: string; active?: number } | null; } catch (error) { const response = userErrorResponse(error); if (response) return response; throw error; }
   const [floors, rooms, events, inventory, infrastructure, inventoryMovements, inspections, inspectionItems, users, accessEvents, contracts, documents, alerts, segments, workOrders, workOrderHistory, changeRequests, occupants, guestProfiles, guestStayHistory, primaryTransfers, exitAssessments, exceptionalExitRequests, auditFeed] = await Promise.all([
     env.DB.prepare("SELECT id, name, position, active FROM floors ORDER BY position, name").all(),
     env.DB.prepare(`SELECT r.*, s.id AS stay_id, s.stay_type, s.check_in, s.expected_check_out, s.notes AS stay_notes, g.id AS guest_id, g.full_name AS guest_name, g.ci AS guest_ci, g.phone AS guest_phone,
@@ -874,7 +874,7 @@ export async function POST(request: Request) {
     const result = await env.DB.prepare("INSERT INTO rooms (floor_id, number, type, capacity, status, notes, active) VALUES (?, ?, ?, ?, 'DISPONIBLE', ?, 1)").bind(floorId, number, String(body.type || "Estándar").trim(), Number(body.capacity) || 1, String(body.notes || "")).run();
     const newRoomId = Number(result.meta.last_row_id);
     const inventoryMode = String(body.inventoryMode || "BASE");
-    const inventoryStatements: D1PreparedStatement[] = [];
+    const inventoryStatements: ReturnType<typeof env.DB.prepare>[] = [];
     if (inventoryMode === "COPY") {
       const sourceItems = await env.DB.prepare("SELECT name, quantity, item_type, notes FROM inventory_items WHERE room_id = ?").bind(Number(body.sourceRoomId)).all<{ name: string; quantity: number; item_type: string; notes: string }>();
       sourceItems.results.forEach((item) => inventoryStatements.push(env.DB.prepare("INSERT INTO inventory_items (room_id, name, quantity, item_type, notes) VALUES (?, ?, ?, ?, ?)").bind(newRoomId, item.name, item.quantity, item.item_type, item.notes)));

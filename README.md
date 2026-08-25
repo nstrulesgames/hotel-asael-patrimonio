@@ -1,100 +1,50 @@
-# vinext-starter
+# Hotel ASAEL · Gestión interna
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Aplicación privada para gestionar habitaciones, huéspedes, estadías, contratos, evidencias, tareas operativas, mini POS, almacén y Patrimonio Base.
 
-## Prerequisites
+## Arquitectura de la rama Vercel
 
-- Node.js `>=22.13.0`
+- Next.js nativo sobre Vercel.
+- Supabase Auth mediante enlace de acceso enviado al correo autorizado.
+- PostgreSQL de Supabase como base de datos del servidor.
+- Supabase Storage privado para contratos, actas, fotografías y comprobantes.
+- Autorización funcional mediante los roles `PROPIETARIO`, `ADMINISTRADOR` y `RECEPCION` almacenados en `public.users`.
+- Patrimonio Base visible exclusivamente para propietarios y administradores.
 
-## Quick Start
+La publicación anterior de Sites permanece separada en `main`. La migración se desarrolla en `codex/vercel-migration` hasta completar las pruebas de integración.
+
+## Desarrollo
+
+Requiere Node.js 22.13 o superior.
 
 ```bash
 npm install
 npm run dev
-npm run build
+npm test
 ```
 
-This starter does not use `wrangler.jsonc`.
+Copia `.env.example` como `.env.local` y configura las variables fuera de Git. No guardes claves privadas en el repositorio.
 
-## Included Shape
+## Variables
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+- `NEXT_PUBLIC_SUPABASE_URL`: URL pública del proyecto.
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`: clave publicable para Supabase Auth.
+- `SUPABASE_SECRET_KEY` o `SUPABASE_SERVICE_ROLE_KEY`: clave privada usada solo por rutas del servidor y Storage.
+- `SUPABASE_DATABASE_URL`, `POSTGRES_URL` o `POSTGRES_PRISMA_URL`: conexión al pooler PostgreSQL de Supabase.
+- `SUPABASE_STORAGE_BUCKET`: opcional; por defecto `hotel-asael-evidencias`.
 
-## Workspace Auth Headers
+## Alta de trabajadores
 
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
+1. Administración registra el correo y el rol en la pantalla de trabajadores.
+2. La cuenta queda pendiente hasta que exista el usuario correspondiente en Supabase Auth.
+3. El trabajador solicita un enlace desde `/signin-with-chatgpt`.
+4. En el primer acceso, el sistema relaciona el UUID verificado con el registro pendiente por correo.
+5. Desactivar el trabajador en la aplicación revoca su acceso funcional y conserva todo su historial.
 
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
+No se permite el registro público automático (`shouldCreateUser: false`). Los usuarios de Supabase Auth deben ser invitados por administración.
 
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
+## Despliegue
 
-Treat the full name as optional and fall back to email when it is absent:
+El proyecto Vercel enlazado es `nstrulesgames/hotel-asael-patrimonio`. Antes del primer preview funcional deben existir las variables privadas y debe añadirse la URL del preview a las Redirect URLs de Supabase Auth.
 
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+La base y el bucket se describen en [supabase/README.md](supabase/README.md).
