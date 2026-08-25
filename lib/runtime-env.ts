@@ -12,7 +12,7 @@ let client: ReturnType<typeof postgres> | null = null;
 function postgresClient() {
   const url = (process.env.SUPABASE_DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL)?.trim();
   if (!url) throw new Error("Falta configurar SUPABASE_DATABASE_URL (o POSTGRES_URL) con el pooler de Supabase.");
-  client ??= postgres(url, { max: 5, idle_timeout: 20, connect_timeout: 15, prepare: false });
+  client ??= postgres(url, { max: 1, idle_timeout: 5, connect_timeout: 15, prepare: false });
   return client;
 }
 
