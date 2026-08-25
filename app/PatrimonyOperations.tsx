@@ -86,7 +86,7 @@ function Movements({ data, busy, submit }: Props) {
   </div>;
 }
 
-function PendingExpenses({ data, busy, submit }: Props) {
+function PendingExpenses({ data, busy, submit }: Pick<Props, "data" | "busy" | "submit">) {
   const pending = data.expenses.filter((expense) => expense.status === "PENDIENTE");
   if (!pending.length) return null;
   return <section className="panel patrimony-pending"><div className="section-heading"><div><span>Aprobaciones</span><h2>Gastos pendientes</h2></div><em>{pending.length}</em></div>{pending.map((expense) => <form key={expense.id} onSubmit={async (event) => { event.preventDefault(); const element = event.currentTarget; const form = new FormData(element); const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null; await submit({ action: "expense_review", expenseId: expense.id, decision: submitter?.value, reviewNote: form.get("reviewNote") }); }}><div><b>{expense.description}</b><small>{expense.property_name} · {expense.category} · Evidencia: {expense.evidence_note}</small></div><strong>{money(expense.amount_cents)}</strong><input name="reviewNote" required placeholder="Nota administrativa" /><button type="submit" value="APROBADO" className="primary" disabled={busy}>Aprobar</button><button type="submit" value="RECHAZADO" className="danger-light" disabled={busy}>Rechazar</button></form>)}</section>;
