@@ -17,6 +17,9 @@ export async function GET() {
     return Response.json({ ok: false, database: false, storage: false }, { status: 503 });
   }
 
+  let database = false;
+  let storage = false;
+  let publicTables = 0;
   const sql = postgres(databaseUrl, { max: 1, prepare: false, connect_timeout: 15 });
   try {
     const rows = await sql<{ total: number }[]>`
@@ -24,16 +27,25 @@ export async function GET() {
       from information_schema.tables
       where table_schema = 'public'
     `;
+    database = true;
+    publicTables = rows[0]?.total || 0;
+  } catch (error) {
+    console.error("Preview database health check failed", error);
+  } finally {
+    await sql.end();
+  }
+
+  try {
     const supabase = createClient(supabaseUrl, secretKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const { error } = await supabase.storage.from(bucket).list("", { limit: 1 });
     if (error) throw error;
-    return Response.json({ ok: true, database: true, storage: true, publicTables: rows[0]?.total || 0 });
+    storage = true;
   } catch (error) {
-    console.error("Preview health check failed", error);
-    return Response.json({ ok: false, database: false, storage: false }, { status: 503 });
-  } finally {
-    await sql.end();
+    console.error("Preview storage health check failed", error);
   }
+
+  const ok = database && storage;
+  return Response.json({ ok, database, storage, publicTables }, { status: ok ? 200 : 503 });
 }
