@@ -11,7 +11,9 @@
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:generate:supabase": "node scripts/generate-supabase-schema.mjs && drizzle-kit generate --config drizzle.supabase.config.ts && node scripts/sync-supabase-migrations.mjs",
+    "db:test:supabase": "node scripts/test-supabase-migrations.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
+    "@electric-sql/pglite": "^0.5.7",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
