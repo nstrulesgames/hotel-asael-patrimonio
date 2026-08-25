@@ -103,7 +103,12 @@ class PreparedStatement {
     const runner = (this.executor || postgresClient()) as unknown as Executor;
     const rawRows = await runner.unsafe(translated.text, translated.params) as T[];
     const rows = rawRows.map((row) => Object.fromEntries(
-      Object.entries(row as Record<string, unknown>).map(([key, value]) => [key, typeof value === "boolean" ? (value ? 1 : 0) : value]),
+      Object.entries(row as Record<string, unknown>).map(([key, value]) => {
+        if (typeof value === "boolean") return [key, value ? 1 : 0];
+        const numericAggregate = key === "total" || key === "active_memberships" || key === "days_overdue" || key.endsWith("_count") || key.endsWith("_cents") || key.endsWith("_stock");
+        if (numericAggregate && typeof value === "string" && /^-?\d+$/.test(value)) return [key, Number(value)];
+        return [key, value];
+      }),
     ) as T);
     const first = rows[0] as { id?: number } | undefined;
     return { results: rows, success: true, meta: { changes: rows.length, ...(first?.id === undefined ? {} : { last_row_id: first.id }) } };
