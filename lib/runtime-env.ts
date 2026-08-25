@@ -51,7 +51,9 @@ function normalizeBooleanParams(text: string, params: unknown[]) {
 
 function translateSql(original: string, params: unknown[], returnId: boolean) {
   let text = original.trim();
-  if (/^(CREATE\s+(TABLE|INDEX)|PRAGMA\b)/i.test(text)) return { skip: true, text, params };
+  // Production uses the versioned Supabase migrations. Runtime schema checks are
+  // retained for the legacy SQLite adapter, so PostgreSQL must ignore their DDL.
+  if (/^(CREATE\s+(TABLE|INDEX)|ALTER\s+TABLE|PRAGMA\b)/i.test(text)) return { skip: true, text, params };
   const insertTable = text.match(/^INSERT(?:\s+OR\s+IGNORE)?\s+INTO\s+([a-z_]+)/i)?.[1]?.toLowerCase();
   const ignore = /^INSERT\s+OR\s+IGNORE/i.test(text);
   text = text.replace(/^INSERT\s+OR\s+IGNORE/i, "INSERT");
