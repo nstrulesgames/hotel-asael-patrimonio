@@ -30,6 +30,12 @@ export async function POST(request: Request) {
   });
   if (error) {
     console.error("Supabase password recovery request failed", error);
+    if (error.status === 429 || error.code === "over_email_send_rate_limit") {
+      return Response.json(
+        { error: "El servicio de correo alcanzó su límite temporal. Espera unos minutos y vuelve a intentarlo una sola vez." },
+        { status: 429, headers: { "Retry-After": "600" } },
+      );
+    }
     return Response.json({ error: "No se pudo enviar la recuperación. Intenta nuevamente en unos minutos." }, { status: 502 });
   }
 
