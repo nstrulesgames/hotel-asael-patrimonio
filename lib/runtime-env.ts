@@ -12,7 +12,7 @@ let client: ReturnType<typeof postgres> | null = null;
 function postgresClient() {
   const url = (process.env.SUPABASE_DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL)?.trim();
   if (!url) throw new Error("Falta configurar SUPABASE_DATABASE_URL (o POSTGRES_URL) con el pooler de Supabase.");
-  client ??= postgres(url, { max: 5, idle_timeout: 20, connect_timeout: 15, prepare: false });
+  client ??= postgres(url, { max: 1, idle_timeout: 5, connect_timeout: 15, prepare: false });
   return client;
 }
 
@@ -103,7 +103,12 @@ class PreparedStatement {
     const runner = (this.executor || postgresClient()) as unknown as Executor;
     const rawRows = await runner.unsafe(translated.text, translated.params) as T[];
     const rows = rawRows.map((row) => Object.fromEntries(
-      Object.entries(row as Record<string, unknown>).map(([key, value]) => [key, typeof value === "boolean" ? (value ? 1 : 0) : value]),
+      Object.entries(row as Record<string, unknown>).map(([key, value]) => {
+        if (typeof value === "boolean") return [key, value ? 1 : 0];
+        const numericAggregate = key === "total" || key === "active_memberships" || key === "days_overdue" || key.endsWith("_count") || key.endsWith("_cents") || key.endsWith("_stock");
+        if (numericAggregate && typeof value === "string" && /^-?\d+$/.test(value)) return [key, Number(value)];
+        return [key, value];
+      }),
     ) as T);
     const first = rows[0] as { id?: number } | undefined;
     return { results: rows, success: true, meta: { changes: rows.length, ...(first?.id === undefined ? {} : { last_row_id: first.id }) } };
@@ -116,10 +121,14 @@ class PreparedStatement {
 const DB = {
   prepare(query: string) { return new PreparedStatement(query); },
   async batch(statements: PreparedStatement[]) {
-    return postgresClient().begin(async (transaction) => Promise.all(statements.map((statement) => {
-      const scoped = Object.assign(Object.create(Object.getPrototypeOf(statement)), statement, { executor: transaction as unknown as Executor });
-      return scoped.run();
-    })));
+    return postgresClient().begin(async (transaction) => {
+      const results = [];
+      for (const statement of statements) {
+        const scoped = Object.assign(Object.create(Object.getPrototypeOf(statement)), statement, { executor: transaction as unknown as Executor });
+        results.push(await scoped.run());
+      }
+      return results;
+    });
   },
 };
 

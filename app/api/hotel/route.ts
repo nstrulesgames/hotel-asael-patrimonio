@@ -148,7 +148,7 @@ async function ensureDatabase() {
     ["ELECTRICIDAD", "Iluminación", "ILUMINACION_ENCHUFES"], ["ELECTRICIDAD", "Enchufes", "ILUMINACION_ENCHUFES"],
   ] as const;
   await db.batch(infrastructureDefaults.map(([area, name, category]) => db.prepare(`INSERT INTO room_infrastructure_items (room_id, area, name, evidence_category, required_evidence, active, notes)
-    SELECT r.id, ?, ?, ?, 1, 1, '' FROM rooms r
+    SELECT r.id, ?, ?, ?, TRUE, TRUE, '' FROM rooms r
     WHERE NOT EXISTS (SELECT 1 FROM room_infrastructure_items configured WHERE configured.room_id = r.id AND lower(configured.name) = lower(?))`).bind(area, name, category, name)));
   await db.prepare("PRAGMA optimize").run();
 }
