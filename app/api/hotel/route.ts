@@ -57,6 +57,10 @@ const schemaStatements = [
 ];
 
 async function ensureDatabase() {
+  // Supabase is managed exclusively through versioned migrations. The runtime
+  // bootstrap remains only for the legacy environment and must never run on
+  // PostgreSQL during a request.
+  if (process.env.SUPABASE_DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL) return;
   const db = env.DB;
   await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
   const userColumns = await db.prepare("PRAGMA table_info(users)").all<{ name: string }>();
