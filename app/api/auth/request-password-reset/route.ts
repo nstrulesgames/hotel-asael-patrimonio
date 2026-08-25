@@ -1,10 +1,8 @@
 import { env } from "@/lib/runtime-env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-type AuthorizedEmail = { name: string; email: string };
-
 export async function POST(request: Request) {
-  let body: { email?: unknown; returnTo?: unknown };
+  let body: { email?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -17,29 +15,23 @@ export async function POST(request: Request) {
   }
 
   const authorized = await env.DB.prepare(
-    "SELECT name, email FROM users WHERE lower(email) = lower(?) AND active = 1 LIMIT 1",
-  ).bind(email).first<AuthorizedEmail>();
+    "SELECT email FROM users WHERE lower(email) = lower(?) AND active = 1 LIMIT 1",
+  ).bind(email).first<{ email: string }>();
   if (!authorized) {
     return Response.json({ error: "Este correo no tiene acceso activo al Hotel ASAEL." }, { status: 403 });
   }
 
-  const returnTo = String(body.returnTo || "/");
-  const safeReturnTo = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
   const callback = new URL("/auth/confirm", request.url);
-  callback.searchParams.set("next", safeReturnTo);
+  callback.searchParams.set("next", "/restablecer-contrasena");
 
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithOtp({
-    email: authorized.email,
-    options: {
-      shouldCreateUser: true,
-      emailRedirectTo: callback.toString(),
-      data: { full_name: authorized.name },
-    },
+  const { error } = await supabase.auth.resetPasswordForEmail(authorized.email, {
+    redirectTo: callback.toString(),
   });
   if (error) {
-    console.error("Supabase magic-link request failed", error);
-    return Response.json({ error: "No se pudo enviar el enlace. Intenta nuevamente en unos minutos." }, { status: 502 });
+    console.error("Supabase password recovery request failed", error);
+    return Response.json({ error: "No se pudo enviar la recuperación. Intenta nuevamente en unos minutos." }, { status: 502 });
   }
+
   return Response.json({ ok: true });
 }
