@@ -404,6 +404,30 @@ export const commercialSequences = sqliteTable("commercial_sequences", {
   nextValue: integer("next_value").notNull().default(1),
 });
 
+export const commercialSettings = sqliteTable("commercial_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedByUserId: integer("updated_by_user_id"),
+  updatedByName: text("updated_by_name"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const replenishmentRequests = sqliteTable("replenishment_requests", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  requestedQuantity: integer("requested_quantity").notNull(),
+  notes: text("notes").notNull().default(""),
+  status: text("status", { enum: ["PENDIENTE", "APROBADA", "RECHAZADA", "CANCELADA"] }).notNull().default("PENDIENTE"),
+  requestedByUserId: integer("requested_by_user_id").notNull(),
+  requestedByName: text("requested_by_name").notNull(),
+  requestedAt: text("requested_at").notNull(),
+  reviewedByUserId: integer("reviewed_by_user_id"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: text("reviewed_at"),
+  reviewNote: text("review_note"),
+  fulfilledMovementId: integer("fulfilled_movement_id"),
+}, (table) => [index("idx_replenishment_status_requested").on(table.status, table.requestedAt), index("idx_replenishment_product_status").on(table.productId, table.status)]);
+
 export const sales = sqliteTable("sales", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   saleNumber: text("sale_number").notNull().unique(),
@@ -463,6 +487,17 @@ export const salePayments = sqliteTable("sale_payments", {
   receivedByName: text("received_by_name").notNull(),
   receivedAt: text("received_at").notNull(),
 }, (table) => [index("idx_sale_payments_sale_received").on(table.saleId, table.receivedAt), index("idx_sale_payments_session_method").on(table.cashSessionId, table.paymentMethod)]);
+
+export const paymentEvidences = sqliteTable("payment_evidences", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  salePaymentId: integer("sale_payment_id").notNull(),
+  filename: text("filename").notNull(),
+  objectKey: text("object_key").notNull(),
+  contentType: text("content_type").notNull(),
+  uploadedByUserId: integer("uploaded_by_user_id").notNull(),
+  uploadedByName: text("uploaded_by_name").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_payment_evidences_payment").on(table.salePaymentId)]);
 
 export const saleReturns = sqliteTable("sale_returns", {
   id: integer("id").primaryKey({ autoIncrement: true }),

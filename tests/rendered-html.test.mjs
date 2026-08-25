@@ -407,7 +407,8 @@ test("aplica las reglas del POS sobre stock, pendientes, cortesías y anulacione
   assert.match(route, /code = 'RECEPTION'/);
   assert.match(route, /date\(expires_on\) >= date\('now'\)/);
   assert.match(route, /ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END/);
-  assert.match(route, /pendingLimitCents = 20000/);
+  assert.match(route, /pending_limit_cents/);
+  assert.match(route, /pendingLimitSetting/);
   assert.match(route, /La cortesía requiere autorización de Administración/);
   assert.match(route, /movement_type, quantity[\s\S]*'VENTA'/);
   assert.match(route, /stockRestored: false/);
@@ -494,4 +495,75 @@ test("muestra caja, operaciones y rentabilidad solamente a administración", asy
   assert.match(pos, /Regresar al stock vendible de recepción/);
   assert.match(pos, /isAdmin && <CommercialReports/);
   assert.match(pos, /Ganancia aproximada/);
+});
+
+test("persiste configuración comercial, solicitudes y respaldos de pago", async () => {
+  const [schema, migration] = await Promise.all([
+    readFile(projectFile("db/schema.ts"), "utf8"),
+    readFile(projectFile("drizzle/0020_dark_bloodstrike.sql"), "utf8"),
+  ]);
+  assert.match(schema, /export const commercialSettings/);
+  assert.match(schema, /export const replenishmentRequests/);
+  assert.match(schema, /export const paymentEvidences/);
+  assert.match(migration, /CREATE TABLE `commercial_settings`/);
+  assert.match(migration, /CREATE TABLE `replenishment_requests`/);
+  assert.match(migration, /CREATE TABLE `payment_evidences`/);
+  assert.match(migration, /pending_limit_cents/);
+});
+
+test("gestiona solicitudes de reposición con aprobación y salida FEFO", async () => {
+  const [route, store] = await Promise.all([
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/StoreView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /body\.action === "replenishment_request"/);
+  assert.match(route, /body\.action === "replenishment_review"/);
+  assert.match(route, /status = 'PENDIENTE'/);
+  assert.match(route, /ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END/);
+  assert.match(route, /'TRANSFERENCIA'/);
+  assert.match(store, /Solicitudes de recepción/);
+  assert.match(store, /Aprobar y transferir/);
+  assert.match(store, /Cancelar solicitud/);
+});
+
+test("registra ajustes positivos y negativos con trazabilidad obligatoria", async () => {
+  const [route, store] = await Promise.all([
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/StoreView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /body\.action === "stock_adjust"/);
+  assert.match(route, /AJUSTE_POSITIVO/);
+  assert.match(route, /AJUSTE_NEGATIVO/);
+  assert.match(route, /VENCIMIENTO/);
+  assert.match(route, /solo dispone de/);
+  assert.match(store, /Ajuste o pérdida/);
+  assert.match(store, /Pérdida/);
+  assert.match(store, /Responsable físico/);
+});
+
+test("permite configurar el límite de consumos pendientes", async () => {
+  const [route, store] = await Promise.all([
+    readFile(projectFile("app/api/store/route.ts"), "utf8"),
+    readFile(projectFile("app/StoreView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /body\.action === "setting_save"/);
+  assert.match(route, /ON CONFLICT\(key\) DO UPDATE/);
+  assert.match(route, /El límite debe estar entre Bs 0 y Bs 10\.000/);
+  assert.match(store, /Límite pendiente por estadía/);
+  assert.match(store, /Los saldos ya existentes no se modifican/);
+});
+
+test("carga y consulta respaldos privados para pagos digitales", async () => {
+  const [route, pos] = await Promise.all([
+    readFile(projectFile("app/api/payment-evidence/route.ts"), "utf8"),
+    readFile(projectFile("app/PosView.tsx"), "utf8"),
+  ]);
+  assert.match(route, /env\.FILES\.put/);
+  assert.match(route, /env\.FILES\.get/);
+  assert.match(route, /15 \* 1024 \* 1024/);
+  assert.match(route, /TRANSFERENCIA/);
+  assert.match(route, /RESPALDO_PAGO_CARGADO/);
+  assert.match(pos, /uploadPaymentEvidences/);
+  assert.match(pos, /Captura o PDF/);
+  assert.match(pos, /Sin respaldo/);
 });

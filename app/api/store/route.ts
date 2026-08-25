@@ -88,7 +88,7 @@ export async function GET(request: Request) {
     const receiptNumber = cleanText(new URL(request.url).searchParams.get("receipt"), 30);
     if (receiptNumber) return saleReceipt(user, receiptNumber);
     const admin = isAdministrator(user);
-    const [locations, products, movements, expiring, activeStays, occupants, recentSales, pendingByStay, currentCashSession, cashSessions, saleItems, payments, returns, periodReports, productReports, workerReports, paymentReports] = await Promise.all([
+    const [locations, products, movements, expiring, activeStays, occupants, recentSales, pendingByStay, currentCashSession, cashSessions, saleItems, payments, returns, periodReports, productReports, workerReports, paymentReports, settings, replenishments, paymentEvidences] = await Promise.all([
       env.DB.prepare("SELECT id, code, name, active FROM stock_locations WHERE active = 1 ORDER BY CASE code WHEN 'MAIN' THEN 0 ELSE 1 END").all(),
       env.DB.prepare(`SELECT p.*,
         COALESCE(SUM(CASE WHEN location.code = 'MAIN' THEN batch.quantity ELSE 0 END), 0) AS main_stock,
@@ -151,10 +151,19 @@ export async function GET(request: Request) {
         WHERE sale.status != 'ANULADA' GROUP BY item.product_id, item.product_name ORDER BY units DESC LIMIT 10`).all() : Promise.resolve({ results: [] }),
       admin ? env.DB.prepare(`SELECT sale.created_by_name, COUNT(*) AS sale_count, COALESCE(SUM(sale.total_cents), 0) AS sales_cents FROM sales sale WHERE sale.status != 'ANULADA' GROUP BY sale.created_by_name ORDER BY sales_cents DESC LIMIT 10`).all() : Promise.resolve({ results: [] }),
       admin ? env.DB.prepare("SELECT payment_method, COUNT(*) AS payment_count, COALESCE(SUM(amount_cents), 0) AS amount_cents FROM sale_payments GROUP BY payment_method ORDER BY amount_cents DESC").all() : Promise.resolve({ results: [] }),
+      env.DB.prepare("SELECT key, value, updated_by_name, updated_at FROM commercial_settings ORDER BY key").all(),
+      env.DB.prepare(`SELECT request.*, product.name AS product_name, product.sku, product.sale_unit, product.active,
+        COALESCE((SELECT SUM(batch.quantity) FROM stock_batches batch JOIN stock_locations location ON location.id = batch.location_id WHERE batch.product_id = request.product_id AND location.code = 'MAIN'), 0) AS main_stock,
+        COALESCE((SELECT SUM(batch.quantity) FROM stock_batches batch JOIN stock_locations location ON location.id = batch.location_id WHERE batch.product_id = request.product_id AND location.code = 'RECEPTION'), 0) AS reception_stock
+        FROM replenishment_requests request JOIN commercial_products product ON product.id = request.product_id
+        ${admin ? "" : "WHERE request.requested_by_user_id = " + Number(user.id)} ORDER BY CASE request.status WHEN 'PENDIENTE' THEN 0 ELSE 1 END, request.requested_at DESC LIMIT 100`).all(),
+      env.DB.prepare(`SELECT evidence.id, evidence.sale_payment_id, evidence.filename, evidence.content_type, evidence.uploaded_by_name, evidence.created_at
+        FROM payment_evidences evidence WHERE evidence.sale_payment_id IN (SELECT payment.id FROM sale_payments payment WHERE payment.sale_id IN (SELECT id FROM sales ORDER BY created_at DESC LIMIT 100)) ORDER BY evidence.created_at DESC`).all(),
     ]);
     const safeProducts = products.results.map((product) => admin ? product : { ...product, average_cost_cents: null, main_stock: null });
     const safeMovements = movements.results.map((movement) => admin ? movement : { ...movement, total_cost_cents: null });
-    return Response.json({ user: { id: user.id, name: user.name, role: user.role }, locations: locations.results, products: safeProducts, movements: safeMovements, expiring: expiring.results, activeStays: activeStays.results, occupants: occupants.results, recentSales: recentSales.results, pendingByStay: pendingByStay.results, pendingLimitCents: 20000, currentCashSession, cashSessions: cashSessions.results, saleItems: saleItems.results, payments: payments.results, returns: returns.results, reports: { periods: periodReports.results, products: productReports.results, workers: workerReports.results, paymentMethods: paymentReports.results } });
+    const pendingLimitCents = Number(settings.results.find((setting) => setting.key === "pending_limit_cents")?.value || 20000);
+    return Response.json({ user: { id: user.id, name: user.name, role: user.role }, locations: locations.results, products: safeProducts, movements: safeMovements, expiring: expiring.results, activeStays: activeStays.results, occupants: occupants.results, recentSales: recentSales.results, pendingByStay: pendingByStay.results, pendingLimitCents, settings: settings.results, replenishments: replenishments.results, paymentEvidences: paymentEvidences.results, currentCashSession, cashSessions: cashSessions.results, saleItems: saleItems.results, payments: payments.results, returns: returns.results, reports: { periods: periodReports.results, products: productReports.results, workers: workerReports.results, paymentMethods: paymentReports.results } });
   } catch (error) {
     return apiError(error);
   }
@@ -271,7 +280,8 @@ export async function POST(request: Request) {
         itemRows.push({ product, quantity: item.quantity, totalPriceCents, totalCostCents });
       }
       const currentPending = stayId ? await env.DB.prepare(`SELECT COALESCE(SUM(MAX(0, sale.total_cents - COALESCE((SELECT SUM(payment.amount_cents) FROM sale_payments payment WHERE payment.sale_id = sale.id), 0) - COALESCE((SELECT SUM(ret.refund_amount_cents) FROM sale_returns ret WHERE ret.sale_id = sale.id), 0))), 0) AS total FROM sales sale WHERE sale.stay_id = ? AND sale.status = 'PENDIENTE'`).bind(stayId).first<{ total: number }>() : null;
-      const pendingLimitCents = 20000;
+      const pendingLimitSetting = await env.DB.prepare("SELECT value FROM commercial_settings WHERE key = 'pending_limit_cents'").first<{ value: string }>();
+      const pendingLimitCents = Math.max(0, Number(pendingLimitSetting?.value || 20000));
       if (paymentMethod === "PENDIENTE" && (currentPending?.total || 0) + totalCents > pendingLimitCents && (!isAdministrator(user) || body.pendingOverride !== true)) {
         return Response.json({ error: `El saldo pendiente superaría ${money(pendingLimitCents)}. Requiere autorización administrativa.` }, { status: 403 });
       }
@@ -300,7 +310,8 @@ export async function POST(request: Request) {
       statements.push(env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, room_id, new_value, reason, created_at) VALUES (?, ?, ?, 'VENTA_REGISTRADA', 'SALE', (SELECT id FROM sales WHERE sale_number = ?), ?, ?, ?, ?)")
         .bind(user.id, user.name, user.role, saleNumber, stay?.room_id || null, JSON.stringify({ saleNumber, status, paymentMethod, totalCents }), saleType === "HUESPED" ? `Venta vinculada a estadía ${stayId}` : "Venta directa", now));
       await env.DB.batch(statements);
-      return Response.json({ ok: true, saleNumber, status, totalCents, receiptUrl: `/api/store?receipt=${encodeURIComponent(saleNumber)}` });
+      const payment = paymentMethod !== "PENDIENTE" ? await env.DB.prepare("SELECT payment.id FROM sale_payments payment JOIN sales sale ON sale.id = payment.sale_id WHERE sale.sale_number = ? ORDER BY payment.id DESC LIMIT 1").bind(saleNumber).first<{ id: number }>() : null;
+      return Response.json({ ok: true, saleNumber, status, totalCents, paymentId: payment?.id || null, receiptUrl: `/api/store?receipt=${encodeURIComponent(saleNumber)}` });
     }
 
     if (body.action === "sale_payment") {
@@ -325,7 +336,8 @@ export async function POST(request: Request) {
         env.DB.prepare("UPDATE sales SET status = ? WHERE id = ?").bind(nextStatus, saleId),
         env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, room_id, new_value, reason, created_at) VALUES (?, ?, ?, 'PAGO_REGISTRADO', 'SALE', ?, ?, ?, ?, ?)").bind(user.id, user.name, user.role, saleId, sale.room_id, JSON.stringify({ amountCents, paymentMethod, nextStatus }), reference || `Cobro de ${sale.sale_number}`, now),
       ]);
-      return Response.json({ ok: true, status: nextStatus, balanceCents: balanceCents - amountCents });
+      const payment = await env.DB.prepare("SELECT id FROM sale_payments WHERE sale_id = ? AND received_by_user_id = ? AND received_at = ? ORDER BY id DESC LIMIT 1").bind(saleId, user.id, now).first<{ id: number }>();
+      return Response.json({ ok: true, status: nextStatus, balanceCents: balanceCents - amountCents, paymentId: payment?.id || null });
     }
 
     if (body.action === "sale_return") {
@@ -400,7 +412,133 @@ export async function POST(request: Request) {
       return Response.json({ ok: true, stockRestored: false });
     }
 
+    if (body.action === "replenishment_request") {
+      const productId = positiveInteger(body.productId);
+      const requestedQuantity = positiveInteger(body.quantity);
+      const notes = cleanText(body.notes, 300);
+      if (!productId || !requestedQuantity) return Response.json({ error: "Selecciona producto y cantidad solicitada." }, { status: 400 });
+      const product = await env.DB.prepare("SELECT id, name FROM commercial_products WHERE id = ? AND active = 1").bind(productId).first<{ id: number; name: string }>();
+      if (!product) return Response.json({ error: "El producto no está disponible." }, { status: 404 });
+      const pending = await env.DB.prepare("SELECT id FROM replenishment_requests WHERE product_id = ? AND status = 'PENDIENTE' LIMIT 1").bind(productId).first();
+      if (pending) return Response.json({ error: "Ya existe una solicitud pendiente para este producto." }, { status: 409 });
+      const inserted = await env.DB.prepare("INSERT INTO replenishment_requests (product_id, requested_quantity, notes, status, requested_by_user_id, requested_by_name, requested_at) VALUES (?, ?, ?, 'PENDIENTE', ?, ?, ?)").bind(productId, requestedQuantity, notes, user.id, user.name, now).run();
+      const requestId = Number(inserted.meta.last_row_id);
+      await env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, new_value, reason, created_at) VALUES (?, ?, ?, 'REPOSICION_SOLICITADA', 'REPLENISHMENT_REQUEST', ?, ?, ?, ?)").bind(user.id, user.name, user.role, requestId, String(requestedQuantity), notes || product.name, now).run();
+      return Response.json({ ok: true, requestId });
+    }
+
+    if (body.action === "replenishment_cancel") {
+      const requestId = positiveInteger(body.requestId);
+      const reason = cleanText(body.reason, 300);
+      if (!requestId || !reason) return Response.json({ error: "Indica la solicitud y el motivo de cancelación." }, { status: 400 });
+      const requestRow = await env.DB.prepare("SELECT id, requested_by_user_id FROM replenishment_requests WHERE id = ? AND status = 'PENDIENTE'").bind(requestId).first<{ id: number; requested_by_user_id: number }>();
+      if (!requestRow) return Response.json({ error: "La solicitud ya no está pendiente." }, { status: 409 });
+      if (requestRow.requested_by_user_id !== user.id && !isAdministrator(user)) return Response.json({ error: "Solo quien solicitó o Administración puede cancelarla." }, { status: 403 });
+      await env.DB.batch([
+        env.DB.prepare("UPDATE replenishment_requests SET status = 'CANCELADA', reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ? WHERE id = ?").bind(user.id, user.name, now, reason, requestId),
+        env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, reason, created_at) VALUES (?, ?, ?, 'REPOSICION_CANCELADA', 'REPLENISHMENT_REQUEST', ?, ?, ?)").bind(user.id, user.name, user.role, requestId, reason, now),
+      ]);
+      return Response.json({ ok: true });
+    }
+
     if (!isAdministrator(user)) return Response.json({ error: "Solo Administración puede modificar catálogo o existencias." }, { status: 403 });
+
+    if (body.action === "setting_save") {
+      const pendingLimitCents = nonNegativeInteger(body.pendingLimitCents);
+      if (pendingLimitCents < 0 || pendingLimitCents > 1_000_000) return Response.json({ error: "El límite debe estar entre Bs 0 y Bs 10.000." }, { status: 400 });
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO commercial_settings (key, value, updated_by_user_id, updated_by_name, updated_at) VALUES ('pending_limit_cents', ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by_user_id = excluded.updated_by_user_id, updated_by_name = excluded.updated_by_name, updated_at = excluded.updated_at").bind(String(pendingLimitCents), user.id, user.name, now),
+        env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, new_value, reason, created_at) VALUES (?, ?, ?, 'CONFIGURACION_COMERCIAL', 'COMMERCIAL_SETTING', ?, 'Límite de consumos pendientes', ?)").bind(user.id, user.name, user.role, String(pendingLimitCents), now),
+      ]);
+      return Response.json({ ok: true, pendingLimitCents });
+    }
+
+    if (body.action === "replenishment_review") {
+      const requestId = positiveInteger(body.requestId);
+      const decision = body.decision === "APROBADA" ? "APROBADA" : body.decision === "RECHAZADA" ? "RECHAZADA" : "";
+      const reviewNote = cleanText(body.reviewNote, 300);
+      const responsible = cleanText(body.responsible, 150);
+      if (!requestId || !decision || !reviewNote) return Response.json({ error: "Indica decisión y nota de revisión." }, { status: 400 });
+      const requestRow = await env.DB.prepare("SELECT request.*, product.name AS product_name FROM replenishment_requests request JOIN commercial_products product ON product.id = request.product_id WHERE request.id = ? AND request.status = 'PENDIENTE'").bind(requestId).first<{ id: number; product_id: number; product_name: string; requested_quantity: number }>();
+      if (!requestRow) return Response.json({ error: "La solicitud ya fue resuelta." }, { status: 409 });
+      if (decision === "RECHAZADA") {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE replenishment_requests SET status = 'RECHAZADA', reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ? WHERE id = ?").bind(user.id, user.name, now, reviewNote, requestId),
+          env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, reason, created_at) VALUES (?, ?, ?, 'REPOSICION_RECHAZADA', 'REPLENISHMENT_REQUEST', ?, ?, ?)").bind(user.id, user.name, user.role, requestId, reviewNote, now),
+        ]);
+        return Response.json({ ok: true, status: decision });
+      }
+      if (!responsible) return Response.json({ error: "Registra quién entrega y quién recibe la reposición." }, { status: 400 });
+      const locations = await env.DB.prepare("SELECT id, code FROM stock_locations WHERE code IN ('MAIN', 'RECEPTION') AND active = 1").all<{ id: number; code: string }>();
+      const main = locations.results.find((location) => location.code === "MAIN");
+      const reception = locations.results.find((location) => location.code === "RECEPTION");
+      if (!main || !reception) return Response.json({ error: "Las ubicaciones comerciales no están disponibles." }, { status: 409 });
+      const batches = await env.DB.prepare("SELECT id, quantity, unit_cost_cents, expires_on FROM stock_batches WHERE product_id = ? AND location_id = ? AND quantity > 0 ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, received_at, id").bind(requestRow.product_id, main.id).all<StockBatch>();
+      const available = batches.results.reduce((sum, batch) => sum + batch.quantity, 0);
+      if (available < requestRow.requested_quantity) return Response.json({ error: `El almacén principal solo dispone de ${available} unidades.` }, { status: 409 });
+      let remaining = requestRow.requested_quantity;
+      let totalCostCents = 0;
+      const statements = [];
+      for (const batch of batches.results) {
+        if (!remaining) break;
+        const moved = Math.min(batch.quantity, remaining);
+        remaining -= moved;
+        totalCostCents += moved * batch.unit_cost_cents;
+        statements.push(env.DB.prepare("UPDATE stock_batches SET quantity = quantity - ? WHERE id = ? AND quantity >= ?").bind(moved, batch.id, moved));
+        statements.push(env.DB.prepare("INSERT INTO stock_batches (product_id, location_id, quantity, unit_cost_cents, expires_on, received_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(requestRow.product_id, reception.id, moved, batch.unit_cost_cents, batch.expires_on, now, user.name));
+      }
+      const movementReason = `Solicitud de reposición #${requestId}: ${reviewNote}`;
+      statements.push(env.DB.prepare("INSERT INTO stock_movements (product_id, from_location_id, to_location_id, movement_type, quantity, total_cost_cents, reason, responsible, created_by, created_at) VALUES (?, ?, ?, 'TRANSFERENCIA', ?, ?, ?, ?, ?, ?)").bind(requestRow.product_id, main.id, reception.id, requestRow.requested_quantity, totalCostCents, movementReason, responsible, user.name, now));
+      statements.push(env.DB.prepare("UPDATE replenishment_requests SET status = 'APROBADA', reviewed_by_user_id = ?, reviewed_by_name = ?, reviewed_at = ?, review_note = ?, fulfilled_movement_id = (SELECT id FROM stock_movements WHERE product_id = ? AND created_at = ? AND reason = ? ORDER BY id DESC LIMIT 1) WHERE id = ?").bind(user.id, user.name, now, reviewNote, requestRow.product_id, now, movementReason, requestId));
+      statements.push(env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, new_value, reason, created_at) VALUES (?, ?, ?, 'REPOSICION_APROBADA', 'REPLENISHMENT_REQUEST', ?, ?, ?, ?)").bind(user.id, user.name, user.role, requestId, String(requestRow.requested_quantity), responsible, now));
+      await env.DB.batch(statements);
+      return Response.json({ ok: true, status: decision, quantity: requestRow.requested_quantity });
+    }
+
+    if (body.action === "stock_adjust") {
+      const productId = positiveInteger(body.productId);
+      const quantity = positiveInteger(body.quantity);
+      const direction = body.direction === "POSITIVO" ? "POSITIVO" : body.direction === "NEGATIVO" ? "NEGATIVO" : "";
+      const locationCode = body.locationCode === "MAIN" ? "MAIN" : body.locationCode === "RECEPTION" ? "RECEPTION" : "";
+      const category = cleanText(body.category, 30).toUpperCase();
+      const reason = cleanText(body.reason, 300);
+      const responsible = cleanText(body.responsible, 150);
+      if (!productId || !quantity || !direction || !locationCode || !["CONTEO", "PERDIDA", "DANO", "VENCIMIENTO", "OTRO"].includes(category) || !reason || !responsible) return Response.json({ error: "Completa producto, ubicación, tipo, cantidad, motivo y responsable." }, { status: 400 });
+      if (direction === "POSITIVO" && ["PERDIDA", "DANO", "VENCIMIENTO"].includes(category)) return Response.json({ error: "Pérdida, daño o vencimiento deben registrarse como salida." }, { status: 400 });
+      const [product, location] = await Promise.all([
+        env.DB.prepare("SELECT id, name, average_cost_cents FROM commercial_products WHERE id = ?").bind(productId).first<{ id: number; name: string; average_cost_cents: number }>(),
+        env.DB.prepare("SELECT id, name FROM stock_locations WHERE code = ? AND active = 1").bind(locationCode).first<{ id: number; name: string }>(),
+      ]);
+      if (!product || !location) return Response.json({ error: "El producto o la ubicación no existen." }, { status: 404 });
+      const fullReason = `${category}: ${reason}`;
+      if (direction === "POSITIVO") {
+        const totalCostCents = quantity * Number(product.average_cost_cents || 0);
+        await env.DB.batch([
+          env.DB.prepare("INSERT INTO stock_batches (product_id, location_id, quantity, unit_cost_cents, expires_on, received_at, created_by) VALUES (?, ?, ?, ?, NULL, ?, ?)").bind(productId, location.id, quantity, product.average_cost_cents || 0, now, user.name),
+          env.DB.prepare("INSERT INTO stock_movements (product_id, from_location_id, to_location_id, movement_type, quantity, total_cost_cents, reason, responsible, created_by, created_at) VALUES (?, NULL, ?, 'AJUSTE_POSITIVO', ?, ?, ?, ?, ?, ?)").bind(productId, location.id, quantity, totalCostCents, fullReason, responsible, user.name, now),
+          env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, new_value, reason, created_at) VALUES (?, ?, ?, 'STOCK_AJUSTE_POSITIVO', 'COMMERCIAL_PRODUCT', ?, ?, ?, ?)").bind(user.id, user.name, user.role, productId, `${locationCode}:${quantity}`, fullReason, now),
+        ]);
+        return Response.json({ ok: true, quantity, direction });
+      }
+      const batches = await env.DB.prepare("SELECT id, quantity, unit_cost_cents, expires_on FROM stock_batches WHERE product_id = ? AND location_id = ? AND quantity > 0 ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, received_at, id").bind(productId, location.id).all<StockBatch>();
+      const available = batches.results.reduce((sum, batch) => sum + batch.quantity, 0);
+      if (available < quantity) return Response.json({ error: `${location.name} solo dispone de ${available} unidades.` }, { status: 409 });
+      let remaining = quantity;
+      let totalCostCents = 0;
+      const statements = [];
+      for (const batch of batches.results) {
+        if (!remaining) break;
+        const removed = Math.min(batch.quantity, remaining);
+        remaining -= removed;
+        totalCostCents += removed * batch.unit_cost_cents;
+        statements.push(env.DB.prepare("UPDATE stock_batches SET quantity = quantity - ? WHERE id = ? AND quantity >= ?").bind(removed, batch.id, removed));
+      }
+      const movementType = category === "VENCIMIENTO" ? "VENCIMIENTO" : "AJUSTE_NEGATIVO";
+      statements.push(env.DB.prepare("INSERT INTO stock_movements (product_id, from_location_id, to_location_id, movement_type, quantity, total_cost_cents, reason, responsible, created_by, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)").bind(productId, location.id, movementType, quantity, totalCostCents, fullReason, responsible, user.name, now));
+      statements.push(env.DB.prepare("INSERT INTO audit_logs (user_id, user_name, user_role, action, entity_type, entity_id, old_value, reason, created_at) VALUES (?, ?, ?, 'STOCK_AJUSTE_NEGATIVO', 'COMMERCIAL_PRODUCT', ?, ?, ?, ?)").bind(user.id, user.name, user.role, productId, `${locationCode}:${quantity}`, fullReason, now));
+      await env.DB.batch(statements);
+      return Response.json({ ok: true, quantity, direction, movementType });
+    }
 
     if (body.action === "product_save") {
       const productId = Number(body.productId || 0);
