@@ -116,10 +116,14 @@ class PreparedStatement {
 const DB = {
   prepare(query: string) { return new PreparedStatement(query); },
   async batch(statements: PreparedStatement[]) {
-    return postgresClient().begin(async (transaction) => Promise.all(statements.map((statement) => {
-      const scoped = Object.assign(Object.create(Object.getPrototypeOf(statement)), statement, { executor: transaction as unknown as Executor });
-      return scoped.run();
-    })));
+    return postgresClient().begin(async (transaction) => {
+      const results = [];
+      for (const statement of statements) {
+        const scoped = Object.assign(Object.create(Object.getPrototypeOf(statement)), statement, { executor: transaction as unknown as Executor });
+        results.push(await scoped.run());
+      }
+      return results;
+    });
   },
 };
 
