@@ -79,7 +79,10 @@ function translateSql(original: string, params: unknown[], returnId: boolean) {
     text = text.replace(new RegExp(`\\b${column}\\s*=\\s*1\\b`, "gi"), `${column} IS TRUE`);
     text = text.replace(new RegExp(`\\b${column}\\s*=\\s*0\\b`, "gi"), `${column} IS FALSE`);
   }
-  text = text.replace(/SUM\(MAX\(0,/gi, "SUM(GREATEST(0,");
+  // SQLite accepts MAX(a, b) as a scalar function; PostgreSQL uses GREATEST.
+  // Translate every two-argument MAX that starts at zero, including standalone
+  // balances and expressions nested inside SUM.
+  text = text.replace(/\bMAX\(0,/gi, "GREATEST(0,");
   text = text.replace(/strftime\('%Y-%m',\s*([^)]+)\)/gi, "to_char(($1)::timestamptz, 'YYYY-MM')");
   text = text.replace(/datetime\('now',\s*'\+1 day'\)/gi, "(CURRENT_TIMESTAMP + INTERVAL '1 day')");
   text = text.replace(/datetime\('now'\)/gi, "CURRENT_TIMESTAMP");

@@ -645,15 +645,20 @@ test("exporta reportes comerciales seguros y ofrece comprobantes térmicos", asy
 });
 
 test("restringe Patrimonio Base a propietarios y administradores", async () => {
-  const [dashboard, route] = await Promise.all([
+  const [dashboard, route, runtime] = await Promise.all([
     readFile(projectFile("app/HotelDashboard.tsx"), "utf8"),
     readFile(projectFile("app/api/patrimony/route.ts"), "utf8"),
+    readFile(projectFile("lib/runtime-env.ts"), "utf8"),
   ]);
   assert.match(dashboard, /data\.user\.role !== "RECEPCION".+Patrimonio/);
   assert.match(route, /role IN \('PROPIETARIO', 'ADMINISTRADOR'\)/);
   assert.match(route, /Patrimonio Base está disponible únicamente para Administración/);
   assert.match(route, /COBRO_PATRIMONIAL_REGISTRADO/);
   assert.match(route, /GASTO_PATRIMONIAL_REGISTRADO/);
+  assert.match(route, /INSERT OR IGNORE INTO patrimony_distribution/);
+  assert.match(route, /FAMILIAR_1/);
+  assert.match(route, /SELECT code FROM patrimony_distribution ORDER BY position/);
+  assert.match(runtime, /GREATEST\(0,/);
 });
 
 test("persiste propiedades, inquilinos, cobros, gastos y distribución patrimonial", async () => {

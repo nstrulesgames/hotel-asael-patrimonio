@@ -25,15 +25,15 @@ async function ensureSchema() {
   await env.DB.batch(schemaStatements.map((statement) => env.DB.prepare(statement)));
   const now = new Date().toISOString();
   const defaults = [
-    ["FATHER", "Papá", 15, 1],
-    ["MOTHER", "Mamá", 15, 2],
-    ["MAINTENANCE", "Mantenimiento", 20, 3],
-    ["LEGAL", "Abogados y contingencias", 15, 4],
-    ["REINVESTMENT", "Reinversión y construcción", 35, 5],
+    ["FAMILIAR_1", "Familiar 1", 15, 1],
+    ["FAMILIAR_2", "Familiar 2", 15, 2],
+    ["FAMILIAR_3", "Familiar 3", 20, 3],
+    ["FAMILIAR_4", "Familiar 4", 15, 4],
+    ["FAMILIAR_5", "Familiar 5", 35, 5],
   ] as const;
   await env.DB.batch(defaults.map(([code, label, percentage, position]) => env.DB.prepare(
-    "INSERT INTO patrimony_distribution (code, label, percentage, position, updated_at) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM patrimony_distribution WHERE code = ?)"
-  ).bind(code, label, percentage, position, now, code)));
+    "INSERT OR IGNORE INTO patrimony_distribution (code, label, percentage, position, updated_at) VALUES (?, ?, ?, ?, ?)"
+  ).bind(code, label, percentage, position, now)));
 }
 
 async function currentAdmin(request: Request): Promise<AdminUser | null> {
@@ -197,7 +197,8 @@ export async function POST(request: Request) {
       const rows = Array.isArray(body.rows) ? body.rows as Array<Record<string, unknown>> : [];
       const normalized = rows.map((row) => ({ code: cleanText(row.code, 40), percentage: integer(row.percentage, "Cada porcentaje debe ser válido.", true) }));
       if (!normalized.length || normalized.reduce((sum, row) => sum + row.percentage, 0) !== 100) throw new Error("VALIDATION:La distribución debe sumar exactamente 100%.");
-      const knownCodes = new Set(["FATHER", "MOTHER", "MAINTENANCE", "LEGAL", "REINVESTMENT"]);
+      const configured = await env.DB.prepare("SELECT code FROM patrimony_distribution ORDER BY position").all<{ code: string }>();
+      const knownCodes = new Set(configured.results.map((row) => row.code));
       if (normalized.some((row) => !knownCodes.has(row.code))) throw new Error("VALIDATION:La distribución contiene una categoría no reconocida.");
       await env.DB.batch(normalized.map((row) => env.DB.prepare("UPDATE patrimony_distribution SET percentage = ?, updated_by_user_id = ?, updated_by_name = ?, updated_at = ? WHERE code = ?").bind(row.percentage, user.id, user.name, now, row.code)));
       await audit(user, "DISTRIBUCION_PATRIMONIAL_ACTUALIZADA", "PATRIMONY_DISTRIBUTION", null, normalized.map((row) => row.code + ":" + row.percentage + "%").join(", "), now);
